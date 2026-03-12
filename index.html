@@ -67,16 +67,17 @@ const MATERIALES_INIT=[
   {id:"rollos",nombre:"Rollos de Película",unidad:"uds",stockActual:0,stockMinimo:10,color:B.tealDark}
 ];
 const MAQUINAS={
+  mezcla:["MEZ-1"],
   extrusion:["EXT-1","EXT-2","EXT-3","EXT-4","EXT-5"],
   impresion:["IMP-1","IMP-2"],
   slitter:["SLI-1","SLI-2"],
   cortadora:["COR-1","COR-2","COR-3","COR-4","COR-5"],
   reciclaje:["REC-1"]
 };
-// Production flow stages (corte_rollo renamed to slitter)
-const ETAPAS=["extrusion","impresion","slitter","cortadora","reciclaje"];
-const ETIQUETAS={extrusion:"Extrusión",impresion:"Impresión",slitter:"Slitter",cortadora:"Cortadora",reciclaje:"Reciclaje"};
-const ICONOS={extrusion:"⚙️",impresion:"🖨️",slitter:"✂️",cortadora:"🛠️",reciclaje:"♻️"};
+// Production flow stages — mezcla is first
+const ETAPAS=["mezcla","extrusion","impresion","slitter","cortadora","reciclaje"];
+const ETIQUETAS={mezcla:"Mezcla",extrusion:"Extrusión",impresion:"Impresión",slitter:"Slitter",cortadora:"Cortadora",reciclaje:"Reciclaje"};
+const ICONOS={mezcla:"🧪",extrusion:"⚙️",impresion:"🖨️",slitter:"✂️",cortadora:"🛠️",reciclaje:"♻️"};
 const CE={mezcla:"#7C3AED",extrusion:B.teal,impresion:B.navy,slitter:B.tealDark,cortadora:"#4E7C59",reciclaje:"#6B7280"};
 
 const PRODUCTOS=[
@@ -97,11 +98,11 @@ const TODOS_PUERTOS=[
 const TURNOS=["☀️ Turno Día","🌙 Turno Noche"];
 const PESO_NUCLEO_DEFAULT=0.45;
 
-// Form defaults — note: no ldpe/mlldpe here, those moved to Resina tab
+// Form defaults
 const F0={
-  etapa:"extrusion",
+  etapa:"mezcla",
   fecha:new Date().toISOString().split("T")[0],
-  maquina:"EXT-1",
+  maquina:"MEZ-1",
   producto:"Funda de Agua",
   cliente:"",
   empleado:"",
@@ -120,7 +121,10 @@ const F0={
   desperdicioCorte:"",
   desperdicioReciclado:"",
   materialRecuperado:"",
-  notas:""
+  notas:"",
+  ldpeMezcla:"",
+  mlldpeMezcla:"",
+  lote:""
 };
 
 const iS={background:"#F8FAFC",border:"1.5px solid "+B.border,borderRadius:10,padding:"13px 14px",color:B.textDark,fontSize:16,outline:"none",width:"100%",boxSizing:"border-box",WebkitAppearance:"none"};
@@ -212,7 +216,8 @@ async function dbSaveOrder(o){
     await fetch(SUPA_URL+"/rest/v1/ordenes",{method:"POST",headers:Object.assign({},SH,{"Prefer":"return=minimal"}),body:JSON.stringify({
       id:String(o.id),cliente:o.cliente,fecha_envio:o.fechaEnvio,puerto:o.puerto,
       notas:o.notas,items:JSON.stringify(o.items),etapa:o.etapa,
-      creado_por:o.creadoPor,creado_en:o.creadoEn
+      creado_por:o.creadoPor,creado_en:o.creadoEn,
+      envios:JSON.stringify(o.envios||[])
     })});
   }catch(e){console.error("dbSaveOrder",e);}
 }
@@ -224,7 +229,8 @@ async function dbLoadOrders(){
     return Array.isArray(rows)?rows.map(x=>({
       id:x.id,cliente:x.cliente,fechaEnvio:x.fecha_envio,puerto:x.puerto,notas:x.notas,
       items:typeof x.items==="string"?JSON.parse(x.items):x.items,
-      etapa:x.etapa,creadoPor:x.creado_por,creadoEn:x.creado_en
+      etapa:x.etapa,creadoPor:x.creado_por,creadoEn:x.creado_en,
+      envios:x.envios?(typeof x.envios==="string"?JSON.parse(x.envios):x.envios):[]
     })):[];
   }catch(e){return[];}
 }
@@ -302,7 +308,7 @@ function Pair({k,v,color}){return(<div><div style={{color:B.textLight,fontSize:1
 // ── LogRow ────────────────────────────────────────────────────────────────────
 function LogRow({log,onDel}){
   const [exp,setExp]=useState(false);
-  const c=CE[log.etapa]||B.textLight;
+  const c=CE[log.etapa||"extrusion"]||B.textLight;
   return(<Card style={{padding:0,overflow:"hidden"}} ch={
     <div>
       <div style={{padding:"13px 14px",display:"flex",alignItems:"center",gap:12}} onClick={()=>setExp(!exp)}>
@@ -556,12 +562,12 @@ function Inventario({mat,setMat,movs,setMovs,sup}){
   </div>);
 }
 
-// ── Registro ──────────────────────────────────────────────────────────────────
-function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
+// ── Registro (now includes Mezcla as first stage + auto-stock) ───────────────
+function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,setMovs,productoLogs,setProductoLogs}){
   const [form,setForm]=useState(F0);
   const [saved,setSaved]=useState(false);
   const [filt,setFilt]=useState("all");
-  const set=k=>v=>setForm(f=>{const n=Object.assign({},f,{[k]:v});if(k==="etapa")n.maquina=MAQUINAS[v][0];return n;});
+  const set=k=>v=>setForm(f=>{const n=Object.assign({},f,{[k]:v});if(k==="etapa")n.maquina=(MAQUINAS[v]||[""])[0];return n;});
 
   const pelNeta=()=>{
     if(form.etapa!=="extrusion")return null;
@@ -570,16 +576,56 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
     return Math.max(0,r>0?p-(r*n):p).toFixed(2);
   };
 
+  // Mezcla helpers
+  const ldpeStock=(mat.find(m=>m.id==="ldpe")||{stockActual:0}).stockActual;
+  const mlldpeStock=(mat.find(m=>m.id==="mlldpe")||{stockActual:0}).stockActual;
+  const mezTotal=()=>{const l=Number(form.ldpeMezcla||0),m=Number(form.mlldpeMezcla||0);return l+m;};
+  const mezPct=()=>{const t=mezTotal();if(!t)return null;return((Number(form.ldpeMezcla||0)/t)*100).toFixed(1);};
+
   const save=()=>{
+    // Mezcla save logic
+    if(form.etapa==="mezcla"){
+      if(!form.ldpeMezcla&&!form.mlldpeMezcla)return;
+      const b={id:Date.now(),fecha:form.fecha,ldpe:Number(form.ldpeMezcla)||0,mlldpe:Number(form.mlldpeMezcla)||0,total:mezTotal(),lote:form.lote,empleado:form.empleado,turno:form.turno,notas:form.notas,supervisorNombre:sup.nombre};
+      [["ldpe",b.ldpe],["mlldpe",b.mlldpe]].forEach(([id,val])=>{
+        if(!val)return;
+        const m=mat.find(x=>x.id===id);
+        if(!m)return;
+        setMat(p=>p.map(x=>x.id===id?Object.assign({},x,{stockActual:Math.max(0,x.stockActual-val)}):x));
+        setMovs(p=>[{id:Date.now()+Math.random(),tipo:"descuento",materialId:id,materialNombre:m.nombre,cantidad:val,unidad:m.unidad,maquina:"Mezcla",fecha:b.fecha,supervisor:sup.nombre,notas:"Lote: "+(b.lote||"—")},...p]);
+      });
+      setResinaLogs(p=>[b,...p]);
+      dbSaveResina(b);
+      setSaved(true);setTimeout(()=>setSaved(false),2000);
+      setForm(Object.assign({},F0,{etapa:"mezcla",maquina:"MEZ-1",empleado:form.empleado,turno:form.turno}));
+      return;
+    }
+
+    // Regular production save
     const r=Object.assign({},form,{id:Date.now(),supervisorNombre:sup.nombre,supervisorCodigo:sup.codigo});
     setRegs(p=>[r,...p]);
     dbSave(r);
+
+    // Auto-stock: cortadora → bags, slitter → rolls go to almacén automatically
+    if(form.etapa==="cortadora"&&Number(form.bolsasProducidas)>0){
+      const entry={id:Date.now()+1,fecha:form.fecha,producto:form.producto||"Producto",cantidad:Number(form.bolsasProducidas),unidad:"uds",tipo:"entrada",destino:"",ordenId:"",notas:"Auto: Cortadora "+form.maquina,supervisor:sup.nombre,registroRef:r.id};
+      setProductoLogs(p=>[entry,...p]);
+      dbSaveProducto(entry);
+    }
+    if(form.etapa==="slitter"&&Number(form.rollosProducidos)>0){
+      const entry={id:Date.now()+2,fecha:form.fecha,producto:form.producto||"Rollo Transparente",cantidad:Number(form.rollosProducidos),unidad:"rollos",tipo:"entrada",destino:"",ordenId:"",notas:"Auto: Slitter "+form.maquina,supervisor:sup.nombre,registroRef:r.id};
+      setProductoLogs(p=>[entry,...p]);
+      dbSaveProducto(entry);
+    }
+
     setSaved(true);
     setTimeout(()=>setSaved(false),2000);
-    setForm(Object.assign({},F0,{etapa:form.etapa,maquina:MAQUINAS[form.etapa][0],empleado:form.empleado,turno:form.turno}));
+    setForm(Object.assign({},F0,{etapa:form.etapa,maquina:(MAQUINAS[form.etapa]||[""])[0],empleado:form.empleado,turno:form.turno}));
   };
 
-  const fil=filt==="all"?regs:regs.filter(r=>r.etapa===filt);
+  // Filter: mezcla shows resinaLogs, others show regs
+  const filRegs=filt==="mezcla"?[]:filt==="all"?regs:regs.filter(r=>r.etapa===filt);
+  const filMezcla=filt==="mezcla"?resinaLogs:filt==="all"?resinaLogs:[];
   const pn=pelNeta();
 
   return(<div style={{display:"flex",flexDirection:"column",gap:16}}>
@@ -603,13 +649,14 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
         {/* Common: date + machine */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
           <F label="Fecha" value={form.fecha} onChange={set("fecha")} type="date"/>
-          <S label="Máquina" value={form.maquina} onChange={set("maquina")} options={MAQUINAS[form.etapa].map(m=>({v:m,l:m}))}/>
+          {form.etapa!=="mezcla"&&<S label="Máquina" value={form.maquina} onChange={set("maquina")} options={(MAQUINAS[form.etapa]||[]).map(m=>({v:m,l:m}))}/>}
+          {form.etapa==="mezcla"&&<F label="# Lote (opcional)" value={form.lote} onChange={set("lote")} placeholder="Ej: L-2025-01"/>}
         </div>
 
-        {/* Employee + Turno — visual toggle */}
+        {/* Employee + Turno */}
         <div style={{background:"#F8FAFC",borderRadius:12,padding:"12px 14px",border:"1.5px solid "+B.border}}>
-          <div style={{fontSize:11,fontWeight:700,color:B.textLight,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Operador en {form.maquina}</div>
-          <S label={"Operador — "+form.maquina} value={form.empleado} onChange={set("empleado")} options={[{v:"",l:"— Seleccionar —"},...NOMBRES_EMPLEADOS.map(n=>({v:n,l:n}))]}/>
+          <div style={{fontSize:11,fontWeight:700,color:B.textLight,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>{form.etapa==="mezcla"?"Operador de Mezcla":"Operador en "+form.maquina}</div>
+          <S label="Operador" value={form.empleado} onChange={set("empleado")} options={[{v:"",l:"— Seleccionar —"},...NOMBRES_EMPLEADOS.map(n=>({v:n,l:n}))]}/>
           <div style={{marginTop:10}}>
             <div style={{fontSize:12,fontWeight:600,color:B.textMid,marginBottom:7}}>Turno</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
@@ -621,7 +668,42 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
           </div>
         </div>
 
-        {/* Extrusion fields (NO resin injection here anymore) */}
+        {/* ── Mezcla fields ── */}
+        {form.etapa==="mezcla"&&<div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+            <div style={{background:"#fff",borderRadius:12,padding:"12px 14px",border:"1.5px solid "+B.border}}>
+              <div style={{color:B.textLight,fontSize:11,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:4}}>Stock LDPE</div>
+              <div style={{color:B.teal,fontSize:20,fontWeight:800}}>{ldpeStock.toLocaleString()}<span style={{fontSize:12,marginLeft:3}}>lbs</span></div>
+            </div>
+            <div style={{background:"#fff",borderRadius:12,padding:"12px 14px",border:"1.5px solid "+B.border}}>
+              <div style={{color:B.textLight,fontSize:11,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:4}}>Stock MLLDPE</div>
+              <div style={{color:B.navy,fontSize:20,fontWeight:800}}>{mlldpeStock.toLocaleString()}<span style={{fontSize:12,marginLeft:3}}>lbs</span></div>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <F label="LDPE (lbs)" value={form.ldpeMezcla} onChange={set("ldpeMezcla")} type="number" placeholder="0"/>
+            <F label="MLLDPE (lbs)" value={form.mlldpeMezcla} onChange={set("mlldpeMezcla")} type="number" placeholder="0"/>
+          </div>
+          {mezTotal()>0&&<div style={{background:"linear-gradient(135deg,"+B.purple+"12,"+B.teal+"12)",border:"1px solid "+B.purple+"33",borderRadius:12,padding:"14px",marginTop:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+              <span style={{color:B.textMid,fontSize:13,fontWeight:600}}>Total mezcla</span>
+              <span style={{color:B.textDark,fontWeight:800,fontSize:16}}>{mezTotal().toLocaleString()} lbs</span>
+            </div>
+            {mezPct()&&<div>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:12}}>
+                <span style={{color:B.teal,fontWeight:700}}>LDPE {mezPct()}%</span>
+                <span style={{color:B.navy,fontWeight:700}}>MLLDPE {(100-Number(mezPct())).toFixed(1)}%</span>
+              </div>
+              <div style={{height:8,background:B.border,borderRadius:4,overflow:"hidden"}}>
+                <div style={{width:mezPct()+"%",height:"100%",background:"linear-gradient(90deg,"+B.teal+","+B.tealLight+")",borderRadius:4}}/>
+              </div>
+            </div>}
+            <div style={{color:B.amber,fontSize:12,fontWeight:600,marginTop:8}}>⚡ Se descontará del inventario al confirmar</div>
+          </div>}
+          <div style={{marginTop:10,background:B.bg,borderRadius:8,padding:"9px 12px",fontSize:12,color:B.textLight}}>💡 Una mezcla puede abarcar 3-5 turnos. Registre cada lote con su turno correspondiente.</div>
+        </div>}
+
+        {/* Extrusion fields */}
         {form.etapa==="extrusion"&&<div>
           <S label="Producto" value={form.producto} onChange={set("producto")} options={PRODUCTOS.map(p=>({v:p,l:p}))}/>
           <div style={{marginTop:12,display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -632,7 +714,6 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
             <F label={"Peso Núcleo/Rollo (lbs)"} value={form.pesoNucleo} onChange={set("pesoNucleo")} type="number" placeholder={String(PESO_NUCLEO_DEFAULT)}/>
             <F label="Desperdicios (lbs)" value={form.desperdicio} onChange={set("desperdicio")} type="number" placeholder="0"/>
           </div>
-          <div style={{marginTop:10,background:B.bg,borderRadius:8,padding:"9px 12px",fontSize:12,color:B.textLight}}>💡 La inyección de resina se registra en la pestaña <strong>Resina</strong>. Núcleo default: {PESO_NUCLEO_DEFAULT} lbs/rollo.</div>
         </div>}
 
         {form.etapa==="impresion"&&<div>
@@ -655,6 +736,7 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
             <F label="Ancho (mm)" value={form.anchoRollo} onChange={set("anchoRollo")} type="number" placeholder="0"/>
             <F label="Desperdicios (lbs)" value={form.desperdicioSlitter} onChange={set("desperdicioSlitter")} type="number" placeholder="0"/>
           </div>
+          <div style={{marginTop:10,background:B.green+"12",borderRadius:8,padding:"9px 12px",fontSize:12,color:B.green,fontWeight:600}}>📦 Los rollos producidos se agregarán automáticamente al almacén</div>
         </div>}
 
         {form.etapa==="cortadora"&&<div>
@@ -665,6 +747,7 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
             <F label="Fundas Producidas" value={form.bolsasProducidas} onChange={set("bolsasProducidas")} type="number" placeholder="0"/>
           </div>
           <div style={{marginTop:12}}><F label="Desperdicios (lbs)" value={form.desperdicioCorte} onChange={set("desperdicioCorte")} type="number" placeholder="0"/></div>
+          <div style={{marginTop:10,background:B.green+"12",borderRadius:8,padding:"9px 12px",fontSize:12,color:B.green,fontWeight:600}}>📦 Las fundas producidas se agregarán automáticamente al almacén</div>
         </div>}
 
         {form.etapa==="reciclaje"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -673,37 +756,64 @@ function Registro({sup,regs,setRegs,mat,setMat,movs,setMovs}){
         </div>}
 
         <F label="Notas (opcional)" value={form.notas} onChange={set("notas")} placeholder="Observaciones..."/>
-        <Btn ch="+ Guardar Registro" fn={save} full/>
+        <Btn ch={form.etapa==="mezcla"?"✓ Confirmar Lote":"+ Guardar Registro"} fn={save} full color={form.etapa==="mezcla"?"linear-gradient(135deg,"+B.purple+","+B.navy+")":undefined}/>
       </div>
     </div>}/>
 
     {/* Records list */}
     <div>
-      <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Registros ({fil.length})</div>
+      <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Registros ({(filt==="mezcla"?filMezcla.length:filt==="all"?filRegs.length+filMezcla.length:filRegs.length)})</div>
       <div style={{display:"flex",gap:7,overflowX:"auto",paddingBottom:4,marginBottom:12,scrollbarWidth:"none"}}>
         {["all",...ETAPAS].map(e=>(<button key={e} onClick={()=>setFilt(e)} style={{background:filt===e?(CE[e]||B.teal):"transparent",border:"1.5px solid "+(filt===e?(CE[e]||B.teal):B.border),borderRadius:20,padding:"7px 14px",color:filt===e?"#fff":B.textMid,fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>{e==="all"?"Todos":ETIQUETAS[e]}</button>))}
       </div>
-      {fil.length===0?<Card style={{textAlign:"center",padding:32,border:"1.5px dashed "+B.border}} ch={<div style={{color:B.textLight,fontSize:14}}>Sin registros aún.</div>}/>
-      :<div style={{display:"flex",flexDirection:"column",gap:8}}>{fil.map(r=><LogRow key={r.id} log={r} onDel={id=>{setRegs(p=>p.filter(x=>x.id!==id));dbDelete(id);}}/>)}</div>}
+
+      {/* Mezcla batch rows */}
+      {filMezcla.length>0&&<div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:filRegs.length>0?12:0}}>
+        {filMezcla.map(b=>(<Card key={b.id} style={{padding:0,overflow:"hidden"}} ch={<div>
+          <div style={{padding:"13px 14px",display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:36,height:36,borderRadius:10,background:B.purple+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>🧪</div>
+            <div style={{flex:1}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                <Badge label={b.lote||"Lote"} color={B.purple}/>
+                {b.turno&&<TurnoBadge turno={b.turno}/>}
+                <span style={{color:B.textLight,fontSize:12}}>{b.fecha}</span>
+              </div>
+              <div style={{color:B.textMid,fontSize:13,fontWeight:500}}>
+                {b.empleado&&b.empleado+" · "}
+                <span style={{color:B.teal,fontWeight:700}}>LDPE {b.ldpe} lbs</span> + <span style={{color:B.navy,fontWeight:700}}>MLLDPE {b.mlldpe} lbs</span> = <span style={{color:B.textDark,fontWeight:800}}>{b.total} lbs</span>
+              </div>
+            </div>
+            <button onClick={()=>{setResinaLogs(p=>p.filter(x=>x.id!==b.id));dbDeleteResina(b.id);}} style={{background:"none",border:"none",color:B.textLight,cursor:"pointer",fontSize:16,padding:4}}>✕</button>
+          </div>
+          {b.notas&&<div style={{borderTop:"1px solid "+B.border,padding:"8px 14px",background:B.bg,color:B.textMid,fontSize:12}}>📝 {b.notas}</div>}
+        </div>}/>))}
+      </div>}
+
+      {/* Regular production rows */}
+      {filRegs.length===0&&filMezcla.length===0?<Card style={{textAlign:"center",padding:32,border:"1.5px dashed "+B.border}} ch={<div style={{color:B.textLight,fontSize:14}}>Sin registros aún.</div>}/>
+      :<div style={{display:"flex",flexDirection:"column",gap:8}}>{filRegs.map(r=><LogRow key={r.id} log={r} onDel={id=>{setRegs(p=>p.filter(x=>x.id!==id));dbDelete(id);}}/>)}</div>}
     </div>
   </div>);
 }
 
-// ── Órdenes ───────────────────────────────────────────────────────────────────
+// ── Órdenes (with shipment tracking) ──────────────────────────────────────────
 const ETAPAS_ORDEN=["pendiente","mezcla","extrusion","impresion","slitter","cortadora","listo"];
-const ETIQ_ORDEN={pendiente:"Pendiente",mezcla:"🧪 Mezcla",extrusion:"Extrusión",impresion:"Impresión",slitter:"Slitter",cortadora:"Cortadora",listo:"✓ Listo"};
-const COLOR_ORDEN={pendiente:B.textLight,mezcla:"#7C3AED",extrusion:B.teal,impresion:B.navy,slitter:B.tealDark,cortadora:"#4E7C59",listo:B.green};
+const ETIQ_ORDEN={pendiente:"Pendiente",mezcla:"🧪 Mezcla",extrusion:"Extrusión",impresion:"Impresión",slitter:"Slitter",cortadora:"Cortadora",listo:"✓ Listo",enviado:"📦 Enviado"};
+const COLOR_ORDEN={pendiente:B.textLight,mezcla:"#7C3AED",extrusion:B.teal,impresion:B.navy,slitter:B.tealDark,cortadora:"#4E7C59",listo:B.green,enviado:B.navy};
 
-function Ordenes({ordenes,setOrdenes,sup}){
+function Ordenes({ordenes,setOrdenes,productoLogs,setProductoLogs,sup}){
   const [modo,setModo]=useState(false);
   const [exp,setExp]=useState(null);
+  const [envioId,setEnvioId]=useState(null); // order id being shipped
+  const [envioItems,setEnvioItems]=useState([]); // [{producto,cantidad,unidad}]
+  const [envioFecha,setEnvioFecha]=useState(new Date().toISOString().split("T")[0]);
   const [form,setForm]=useState({cliente:"",fechaEnvio:"",puerto:TODOS_PUERTOS[0].v,notas:"",items:[{producto:"",cantidad:"",unidad:"uds"}]});
   const addItem=()=>setForm(f=>Object.assign({},f,{items:[...f.items,{producto:"",cantidad:"",unidad:"uds"}]}));
   const setItem=(i,k,v)=>setForm(f=>{const it=[...f.items];it[i]=Object.assign({},it[i],{[k]:v});return Object.assign({},f,{items:it});});
   const removeItem=i=>setForm(f=>Object.assign({},f,{items:f.items.filter((_,x)=>x!==i)}));
   const save=()=>{
     if(!form.cliente||form.items.some(x=>!x.producto))return;
-    const o={id:Date.now(),cliente:form.cliente,fechaEnvio:form.fechaEnvio,puerto:form.puerto,notas:form.notas,items:form.items,etapa:"pendiente",creadoPor:sup.nombre,creadoEn:new Date().toISOString().split("T")[0]};
+    const o={id:Date.now(),cliente:form.cliente,fechaEnvio:form.fechaEnvio,puerto:form.puerto,notas:form.notas,items:form.items,etapa:"pendiente",creadoPor:sup.nombre,creadoEn:new Date().toISOString().split("T")[0],envios:[]};
     setOrdenes(p=>[o,...p]);
     dbSaveOrder(o);
     setForm({cliente:"",fechaEnvio:"",puerto:TODOS_PUERTOS[0].v,notas:"",items:[{producto:"",cantidad:"",unidad:"uds"}]});
@@ -717,13 +827,147 @@ function Ordenes({ordenes,setOrdenes,sup}){
     dbUpdateOrder(o.id,{etapa:next});
   };
   const eliminar=id=>{setOrdenes(p=>p.filter(x=>x.id!==id));dbDeleteOrder(id);};
-  const abiertas=ordenes.filter(o=>o.etapa!=="listo");
-  const cerradas=ordenes.filter(o=>o.etapa==="listo");
+
+  // Start shipment flow
+  const iniciarEnvio=o=>{
+    setEnvioId(o.id);
+    setEnvioFecha(new Date().toISOString().split("T")[0]);
+    setEnvioItems((o.items||[]).map(it=>({producto:it.producto,cantidad:"",unidad:it.unidad,max:Number(it.cantidad||0)})));
+  };
+
+  // Calculate already shipped per product for an order
+  const enviadoPorProducto=(o,producto)=>{
+    if(!o.envios)return 0;
+    return o.envios.reduce((s,env)=>{
+      return s+(env.items||[]).filter(it=>it.producto===producto).reduce((ss,it)=>ss+Number(it.cantidad||0),0);
+    },0);
+  };
+
+  // Confirm shipment
+  const confirmarEnvio=()=>{
+    const o=ordenes.find(x=>x.id===envioId);
+    if(!o)return;
+    const itemsEnviados=envioItems.filter(it=>Number(it.cantidad)>0).map(it=>({producto:it.producto,cantidad:Number(it.cantidad),unidad:it.unidad}));
+    if(itemsEnviados.length===0)return;
+    const envio={id:Date.now(),fecha:envioFecha,supervisor:sup.nombre,items:itemsEnviados};
+    const newEnvios=[...(o.envios||[]),envio];
+
+    // Check if fully shipped
+    const allItems=o.items||[];
+    let fullyShipped=true;
+    allItems.forEach(it=>{
+      const totalEnv=enviadoPorProducto(o,it.producto)+itemsEnviados.filter(e=>e.producto===it.producto).reduce((s,e)=>s+e.cantidad,0);
+      if(totalEnv<Number(it.cantidad||0))fullyShipped=false;
+    });
+
+    const newEtapa=fullyShipped?"enviado":"listo";
+    setOrdenes(p=>p.map(x=>x.id===envioId?Object.assign({},x,{envios:newEnvios,etapa:newEtapa}):x));
+    dbUpdateOrder(o.id,{etapa:newEtapa,envios:JSON.stringify(newEnvios)});
+
+    // Deduct from stock (create salida entries)
+    itemsEnviados.forEach(it=>{
+      const entry={id:Date.now()+Math.random(),fecha:envioFecha,producto:it.producto,cantidad:it.cantidad,unidad:it.unidad,tipo:"salida",destino:o.cliente+" → "+o.puerto,ordenId:String(o.id),notas:"Envío orden #"+String(o.id).slice(-4),supervisor:sup.nombre};
+      setProductoLogs(p=>[entry,...p]);
+      dbSaveProducto(entry);
+    });
+
+    setEnvioId(null);
+    setEnvioItems([]);
+  };
+
+  const abiertas=ordenes.filter(o=>o.etapa!=="listo"&&o.etapa!=="enviado");
+  const listas=ordenes.filter(o=>o.etapa==="listo");
+  const enviadas=ordenes.filter(o=>o.etapa==="enviado");
   const esTerresetre=p=>PUERTOS_TERRESTRES.includes(p);
+
+  const renderOrderCard=(o,section)=>{
+    const ei=ETAPAS_ORDEN.indexOf(o.etapa==="enviado"?"listo":o.etapa);
+    const c=COLOR_ORDEN[o.etapa];
+    const items=o.items||[];
+    const terrestre=esTerresetre(o.puerto);
+    const isExp=exp===o.id;
+    return(<Card key={o.id} accent={c} ch={<div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,cursor:"pointer"}} onClick={()=>setExp(isExp?null:o.id)}>
+        <div style={{flex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+            <Badge label={o.etapa==="enviado"?"📦 Enviado":ETIQ_ORDEN[o.etapa]} color={c}/>
+            {o.fechaEnvio&&<span style={{color:B.textLight,fontSize:12}}>📅 {o.fechaEnvio}</span>}
+          </div>
+          <div style={{color:B.textDark,fontSize:16,fontWeight:800}}>{o.cliente}</div>
+          {o.puerto&&<div style={{color:B.textLight,fontSize:12,marginTop:2}}>{terrestre?"🛣️":"🚢"} {o.puerto}</div>}
+        </div>
+        <span style={{color:B.textLight,fontSize:14}}>{isExp?"▲":"▼"}</span>
+      </div>
+      {section==="activas"&&<div>
+        <div style={{display:"flex",gap:2,marginBottom:4}}>
+          {ETAPAS_ORDEN.map((e,i)=>{const done=i<=ei,curr=i===ei;return(<div key={e} style={{flex:1,height:5,borderRadius:3,background:done?(curr?c:B.green):B.border}}/>);})}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:B.textLight,marginBottom:10}}><span>Inicio</span><span style={{color:B.green,fontWeight:700}}>Listo</span></div>
+      </div>}
+      <div style={{marginBottom:8}}>
+        {items.slice(0,isExp?99:2).map((it,i)=>{
+          const env=enviadoPorProducto(o,it.producto);
+          return(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid "+B.border}}>
+            <span style={{color:B.textDark,fontSize:13,fontWeight:600}}>{it.producto}</span>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              {env>0&&<span style={{color:B.navy,fontSize:11,fontWeight:700}}>({env} enviado)</span>}
+              <span style={{color:B.teal,fontWeight:800,fontSize:13}}>{Number(it.cantidad||0).toLocaleString()} {it.unidad}</span>
+            </div>
+          </div>);
+        })}
+        {!isExp&&items.length>2&&<div style={{color:B.textLight,fontSize:12,marginTop:4}}>+{items.length-2} más...</div>}
+      </div>
+      {isExp&&<div>
+        {o.notas&&<div style={{color:B.textMid,fontSize:13,background:B.bg,borderRadius:8,padding:"8px 10px",marginBottom:10}}>📝 {o.notas}</div>}
+        <div style={{color:B.textLight,fontSize:11,marginBottom:10}}>Creado por {o.creadoPor} · {o.creadoEn}</div>
+
+        {/* Shipment history */}
+        {(o.envios||[]).length>0&&<div style={{marginBottom:12}}>
+          <div style={{color:B.textLight,fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",marginBottom:6}}>Envíos realizados</div>
+          {o.envios.map((env,ei)=>(<div key={ei} style={{background:B.bg,borderRadius:10,padding:"10px 12px",marginBottom:6}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+              <span style={{color:B.navy,fontSize:12,fontWeight:800}}>📦 Envío {ei+1}</span>
+              <span style={{color:B.textLight,fontSize:11}}>{env.fecha} · {env.supervisor}</span>
+            </div>
+            {(env.items||[]).map((it,ii)=>(<div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"2px 0"}}>
+              <span style={{color:B.textMid}}>{it.producto}</span>
+              <span style={{color:B.navy,fontWeight:700}}>{Number(it.cantidad).toLocaleString()} {it.unidad}</span>
+            </div>))}
+          </div>))}
+        </div>}
+
+        {/* Envio form inline */}
+        {envioId===o.id&&<div style={{background:B.navy+"08",border:"1.5px solid "+B.navy+"33",borderRadius:12,padding:"14px",marginBottom:10}}>
+          <div style={{color:B.navy,fontSize:12,fontWeight:800,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Registrar Envío</div>
+          <F label="Fecha de Envío" value={envioFecha} onChange={setEnvioFecha} type="date"/>
+          <div style={{marginTop:10}}>
+            {envioItems.map((it,i)=>{
+              const yaEnv=enviadoPorProducto(o,it.producto);
+              const restante=it.max-yaEnv;
+              return(<div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
+                <div style={{flex:1}}><span style={{color:B.textDark,fontSize:13,fontWeight:700}}>{it.producto}</span><span style={{color:B.textLight,fontSize:11,marginLeft:6}}>(máx: {restante} {it.unidad})</span></div>
+                <input type="number" value={it.cantidad} onChange={e=>{const v=Math.min(Number(e.target.value),restante);setEnvioItems(p=>{const n=[...p];n[i]=Object.assign({},n[i],{cantidad:v>0?String(v):""});return n;});}} placeholder="0" style={Object.assign({},iS,{width:80,padding:"8px 10px",fontSize:14,textAlign:"center"})}/>
+              </div>);
+            })}
+          </div>
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <Btn ch="✓ Confirmar Envío" fn={confirmarEnvio} color={B.navy} small/>
+            <Btn ch="Cancelar" fn={()=>setEnvioId(null)} color={B.textMid} outline small/>
+          </div>
+        </div>}
+
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {o.etapa!=="listo"&&o.etapa!=="enviado"&&<Btn ch={"Avanzar → "+(ETIQ_ORDEN[ETAPAS_ORDEN[ei+1]]||"")} fn={()=>avanzar(o)} color={B.green} small/>}
+          {o.etapa==="listo"&&envioId!==o.id&&<Btn ch="📦 Enviar" fn={()=>iniciarEnvio(o)} color={B.navy} small/>}
+          <Btn ch="Eliminar" fn={()=>eliminar(o.id)} color={B.red} outline small/>
+        </div>
+      </div>}
+    </div>}/>);
+  };
 
   return(<div style={{display:"flex",flexDirection:"column",gap:16}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-      <div><h2 style={{color:B.textDark,fontSize:20,fontWeight:800,margin:"0 0 2px"}}>Órdenes de Producción</h2><p style={{color:B.textLight,fontSize:13,margin:0}}>{abiertas.length} activas · {cerradas.length} completadas</p></div>
+      <div><h2 style={{color:B.textDark,fontSize:20,fontWeight:800,margin:"0 0 2px"}}>Órdenes de Producción</h2><p style={{color:B.textLight,fontSize:13,margin:0}}>{abiertas.length} activas · {listas.length} listas · {enviadas.length} enviadas</p></div>
       <Btn ch={modo?"✕ Cancelar":"+ Nueva"} fn={()=>setModo(!modo)} color={modo?B.textMid:("linear-gradient(135deg,"+B.teal+","+B.navy+")")} small/>
     </div>
 
@@ -753,47 +997,18 @@ function Ordenes({ordenes,setOrdenes,sup}){
       </div>
     </div>}/>}
 
-    {abiertas.length===0&&!modo&&<Card style={{textAlign:"center",padding:32,border:"1.5px dashed "+B.border}} ch={<div><div style={{fontSize:36,marginBottom:8}}>📋</div><div style={{color:B.textMid,fontSize:14,fontWeight:700}}>Sin órdenes activas</div><div style={{color:B.textLight,fontSize:13,marginTop:4}}>Toca "+ Nueva" para registrar una orden</div></div>}/>}
+    {abiertas.length===0&&listas.length===0&&!modo&&<Card style={{textAlign:"center",padding:32,border:"1.5px dashed "+B.border}} ch={<div><div style={{fontSize:36,marginBottom:8}}>📋</div><div style={{color:B.textMid,fontSize:14,fontWeight:700}}>Sin órdenes activas</div><div style={{color:B.textLight,fontSize:13,marginTop:4}}>Toca "+ Nueva" para registrar una orden</div></div>}/>}
 
-    {abiertas.map(o=>{
-      const ei=ETAPAS_ORDEN.indexOf(o.etapa);
-      const c=COLOR_ORDEN[o.etapa];
-      const items=o.items||[];
-      const terrestre=esTerresetre(o.puerto);
-      return(<Card key={o.id} accent={c} ch={<div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,cursor:"pointer"}} onClick={()=>setExp(exp===o.id?null:o.id)}>
-          <div style={{flex:1}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
-              <Badge label={ETIQ_ORDEN[o.etapa]} color={c}/>
-              {o.fechaEnvio&&<span style={{color:B.textLight,fontSize:12}}>📅 {o.fechaEnvio}</span>}
-            </div>
-            <div style={{color:B.textDark,fontSize:16,fontWeight:800}}>{o.cliente}</div>
-            {o.puerto&&<div style={{color:B.textLight,fontSize:12,marginTop:2}}>{terrestre?"🛣️":"🚢"} {o.puerto}</div>}
-          </div>
-          <span style={{color:B.textLight,fontSize:14}}>{exp===o.id?"▲":"▼"}</span>
-        </div>
-        <div style={{display:"flex",gap:2,marginBottom:4}}>
-          {ETAPAS_ORDEN.map((e,i)=>{const done=i<=ei,curr=i===ei;return(<div key={e} style={{flex:1,height:5,borderRadius:3,background:done?(curr?c:B.green):B.border}}/>);})}
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:B.textLight,marginBottom:10}}><span>Inicio</span><span style={{color:B.green,fontWeight:700}}>Listo</span></div>
-        <div style={{marginBottom:8}}>
-          {items.slice(0,exp===o.id?99:2).map((it,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid "+B.border}}><span style={{color:B.textDark,fontSize:13,fontWeight:600}}>{it.producto}</span><span style={{color:B.teal,fontWeight:800,fontSize:13}}>{Number(it.cantidad||0).toLocaleString()} {it.unidad}</span></div>))}
-          {exp!==o.id&&items.length>2&&<div style={{color:B.textLight,fontSize:12,marginTop:4}}>+{items.length-2} más...</div>}
-        </div>
-        {exp===o.id&&<div>
-          {o.notas&&<div style={{color:B.textMid,fontSize:13,background:B.bg,borderRadius:8,padding:"8px 10px",marginBottom:10}}>📝 {o.notas}</div>}
-          <div style={{color:B.textLight,fontSize:11,marginBottom:10}}>Creado por {o.creadoPor} · {o.creadoEn}</div>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            {o.etapa!=="listo"&&<Btn ch={"Avanzar → "+(ETIQ_ORDEN[ETAPAS_ORDEN[ei+1]]||"")} fn={()=>avanzar(o)} color={B.green} small/>}
-            <Btn ch="Eliminar" fn={()=>eliminar(o.id)} color={B.red} outline small/>
-          </div>
-        </div>}
-      </div>}/>);
-    })}
+    {abiertas.map(o=>renderOrderCard(o,"activas"))}
 
-    {cerradas.length>0&&<div>
-      <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Completadas ({cerradas.length})</div>
-      {cerradas.slice(0,5).map(o=>(<Card key={o.id} style={{opacity:.7,padding:"12px 14px"}} ch={<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{color:B.textDark,fontSize:14,fontWeight:700}}>{o.cliente}</div><div style={{color:B.textLight,fontSize:12}}>{o.fechaEnvio} · {o.puerto}</div></div><div style={{display:"flex",alignItems:"center",gap:8}}><Badge label="✓ Listo" color={B.green}/><button onClick={()=>eliminar(o.id)} style={{background:"none",border:"none",color:B.textLight,cursor:"pointer",fontSize:16}}>✕</button></div></div>}/>))}
+    {listas.length>0&&<div>
+      <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Listas para Envío ({listas.length})</div>
+      {listas.map(o=>renderOrderCard(o,"listas"))}
+    </div>}
+
+    {enviadas.length>0&&<div>
+      <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Enviadas ({enviadas.length})</div>
+      {enviadas.map(o=>renderOrderCard(o,"enviadas"))}
     </div>}
   </div>);
 }
@@ -1008,7 +1223,20 @@ function Rendimiento({regs,resinaLogs}){
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-// ── Producto Terminado (Almacén) ──────────────────────────────────────────────
+// ── Almacén (Producto Terminado + Materia Prima merged) ──────────────────────
+function AlmacenUnificado({logs,setLogs,ordenes,sup,mat,setMat,movs,setMovs}){
+  const [seccion,setSeccion]=useState("terminado"); // "terminado" | "prima"
+  return(<div style={{display:"flex",flexDirection:"column",gap:16}}>
+    <div><h2 style={{color:B.textDark,fontSize:20,fontWeight:800,margin:"0 0 2px"}}>📦 Almacén</h2><p style={{color:B.textLight,fontSize:13,margin:0}}>Producto terminado y materia prima</p></div>
+    <div style={{display:"flex",background:B.bg,borderRadius:12,padding:4,gap:3}}>
+      <button onClick={()=>setSeccion("terminado")} style={{flex:1,background:seccion==="terminado"?"#fff":"transparent",border:"none",borderRadius:10,padding:"10px 4px",color:seccion==="terminado"?B.textDark:B.textLight,fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:seccion==="terminado"?"0 1px 4px rgba(0,0,0,.1)":"none"}}>🏭 Producto Terminado</button>
+      <button onClick={()=>setSeccion("prima")} style={{flex:1,background:seccion==="prima"?"#fff":"transparent",border:"none",borderRadius:10,padding:"10px 4px",color:seccion==="prima"?B.textDark:B.textLight,fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:seccion==="prima"?"0 1px 4px rgba(0,0,0,.1)":"none"}}>📦 Materia Prima</button>
+    </div>
+    {seccion==="terminado"&&<ProductoTerminado logs={logs} setLogs={setLogs} ordenes={ordenes} sup={sup}/>}
+    {seccion==="prima"&&<Inventario mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} sup={sup}/>}
+  </div>);
+}
+
 function ProductoTerminado({logs,setLogs,ordenes,sup}){
   const [modo,setModo]=useState(false); // "entrada" | "salida" | false
   const [saved,setSaved]=useState(false);
@@ -1172,7 +1400,7 @@ function Dashboard({regs,mat,ordenes,resinaLogs,setVista}){
   return(<div style={{display:"flex",flexDirection:"column",gap:16}}>
     <div><h2 style={{color:B.textDark,fontSize:22,fontWeight:800,margin:"0 0 2px"}}>Dashboard</h2><p style={{color:B.textLight,fontSize:13,margin:0}}>Resumen de producción</p></div>
 
-    {alts.length>0&&<div style={{background:B.red+"12",border:"1.5px solid "+B.red+"44",borderRadius:12,padding:"12px 16px",display:"flex",gap:10,alignItems:"center",cursor:"pointer"}} onClick={()=>setVista("inventario")}><span style={{fontSize:20}}>🚨</span><div style={{flex:1}}><div style={{color:B.red,fontWeight:700,fontSize:14}}>Stock Bajo</div><div style={{color:B.textMid,fontSize:13}}>{alts.map(a=>a.nombre).join(", ")}</div></div><span style={{color:B.teal,fontSize:13,fontWeight:700}}>Ver →</span></div>}
+    {alts.length>0&&<div style={{background:B.red+"12",border:"1.5px solid "+B.red+"44",borderRadius:12,padding:"12px 16px",display:"flex",gap:10,alignItems:"center",cursor:"pointer"}} onClick={()=>setVista("almacen")}><span style={{fontSize:20}}>🚨</span><div style={{flex:1}}><div style={{color:B.red,fontWeight:700,fontSize:14}}>Stock Bajo</div><div style={{color:B.textMid,fontSize:13}}>{alts.map(a=>a.nombre).join(", ")}</div></div><span style={{color:B.teal,fontSize:13,fontWeight:700}}>Ver →</span></div>}
 
     {ordenesActivas.length>0&&<div style={{background:B.teal+"10",border:"1.5px solid "+B.teal+"44",borderRadius:12,padding:"12px 16px",cursor:"pointer"}} onClick={()=>setVista("ordenes")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><div style={{color:B.teal,fontWeight:700,fontSize:14}}>📋 Órdenes Activas ({ordenesActivas.length})</div><span style={{color:B.teal,fontSize:13,fontWeight:700}}>Ver →</span></div>
@@ -1191,23 +1419,14 @@ function Dashboard({regs,mat,ordenes,resinaLogs,setVista}){
     <Card ch={<div>
       <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:12}}>Flujo de Producción</div>
       <div style={{display:"flex",overflowX:"auto",gap:0,paddingBottom:4}}>
-        {/* Mezcla — first stage */}
-        <div style={{display:"flex",alignItems:"center",flexShrink:0}}>
-          <div style={{background:B.bg,border:"1.5px solid #A78BFA44",borderRadius:12,padding:"12px 10px",textAlign:"center",minWidth:72}}>
-            <div style={{fontSize:20}}>🧪</div>
-            <div style={{color:"#7C3AED",fontSize:9,fontWeight:700,textTransform:"uppercase",margin:"3px 0"}}>Mezcla</div>
-            <div style={{color:B.textDark,fontWeight:800,fontSize:20}}>{resinaLogs.length}</div>
-          </div>
-          <div style={{color:B.border,fontSize:18,padding:"0 3px"}}>›</div>
-        </div>
-        {ETAPAS.map((e,i)=>{const n=regs.filter(r=>r.etapa===e).length,c=CE[e];return(<div key={e} style={{display:"flex",alignItems:"center",flexShrink:0}}><div style={{background:B.bg,border:"1.5px solid "+c+"44",borderRadius:12,padding:"12px 10px",textAlign:"center",minWidth:72}}><div style={{fontSize:20}}>{ICONOS[e]}</div><div style={{color:c,fontSize:9,fontWeight:700,textTransform:"uppercase",margin:"3px 0"}}>{ETIQUETAS[e]}</div><div style={{color:B.textDark,fontWeight:800,fontSize:20}}>{n}</div></div>{i<ETAPAS.length-1&&<div style={{color:B.border,fontSize:18,padding:"0 3px"}}>›</div>}</div>);})}
+        {ETAPAS.map((e,i)=>{const n=e==="mezcla"?resinaLogs.length:regs.filter(r=>r.etapa===e).length;const c=CE[e];return(<div key={e} style={{display:"flex",alignItems:"center",flexShrink:0}}><div style={{background:B.bg,border:"1.5px solid "+c+"44",borderRadius:12,padding:"12px 10px",textAlign:"center",minWidth:72}}><div style={{fontSize:20}}>{ICONOS[e]}</div><div style={{color:c,fontSize:9,fontWeight:700,textTransform:"uppercase",margin:"3px 0"}}>{ETIQUETAS[e]}</div><div style={{color:B.textDark,fontWeight:800,fontSize:20}}>{n}</div></div>{i<ETAPAS.length-1&&<div style={{color:B.border,fontSize:18,padding:"0 3px"}}>›</div>}</div>);})}
       </div>
     </div>}/>
 
     <Card ch={<div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase"}}>Inventario</div>
-        <button onClick={()=>setVista("inventario")} style={{background:"none",border:"1px solid "+B.border,color:B.teal,borderRadius:8,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:700}}>Ver →</button>
+        <button onClick={()=>setVista("almacen")} style={{background:"none",border:"1px solid "+B.border,color:B.teal,borderRadius:8,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:700}}>Ver →</button>
       </div>
       {mat.map(m=>{const bj=m.stockActual<=m.stockMinimo,cr=m.stockActual<=m.stockMinimo*.5,bc=cr?B.red:bj?B.amber:B.green;return(<div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid "+B.border}}><span style={{color:B.textDark,fontSize:14,fontWeight:600}}>{m.nombre}</span><div style={{display:"flex",alignItems:"center",gap:8}}>{(bj||cr)&&<span>{cr?"🚨":"⚠️"}</span>}<span style={{color:bc,fontWeight:800,fontSize:15}}>{m.stockActual.toLocaleString()} {m.unidad}</span></div></div>);})}
     </div>}/>
@@ -1246,12 +1465,10 @@ function App(){
   },0);
   const NAV=[
     {id:"dashboard",icon:"📊",label:"Inicio"},
-    {id:"resina",icon:"🧪",label:"Mezcla"},
     {id:"registro",icon:"➕",label:"Registrar"},
     {id:"ordenes",icon:"📋",label:"Órdenes",badge:ordenesActivas},
+    {id:"almacen",icon:"📦",label:"Almacén",badge:alts||Math.max(0,Math.round(ptEnAlmacen/1000))||0},
     {id:"rendimiento",icon:"📈",label:"Equipo"},
-    {id:"almacen",icon:"🏭",label:"Almacén",badge:Math.max(0,Math.round(ptEnAlmacen/1000))},
-    {id:"inventario",icon:"📦",label:"Stock",badge:alts},
   ];
 
   return(<div style={{minHeight:"100dvh",background:B.bg,paddingBottom:84}}>
@@ -1270,12 +1487,10 @@ function App(){
     <div style={{padding:"16px 16px 0"}}>
       {dbLoading&&<div style={{textAlign:"center",padding:40,color:B.textLight}}><div style={{fontSize:32,marginBottom:8}}>⏳</div><div style={{fontSize:14}}>Cargando datos...</div></div>}
       {!dbLoading&&vista==="dashboard"&&<Dashboard regs={regs} mat={mat} ordenes={ordenes} resinaLogs={resinaLogs} setVista={setVista}/>}
-      {!dbLoading&&vista==="registro"&&<Registro sup={sup} regs={regs} setRegs={setRegs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs}/>}
-      {!dbLoading&&vista==="resina"&&<Resina resinaLogs={resinaLogs} setResinaLogs={setResinaLogs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} sup={sup}/>}
-      {!dbLoading&&vista==="ordenes"&&<Ordenes ordenes={ordenes} setOrdenes={setOrdenes} sup={sup}/>}
+      {!dbLoading&&vista==="registro"&&<Registro sup={sup} regs={regs} setRegs={setRegs} resinaLogs={resinaLogs} setResinaLogs={setResinaLogs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} productoLogs={productoLogs} setProductoLogs={setProductoLogs}/>}
+      {!dbLoading&&vista==="ordenes"&&<Ordenes ordenes={ordenes} setOrdenes={setOrdenes} productoLogs={productoLogs} setProductoLogs={setProductoLogs} sup={sup}/>}
       {!dbLoading&&vista==="rendimiento"&&<Rendimiento regs={regs} resinaLogs={resinaLogs}/>}
-      {!dbLoading&&vista==="almacen"&&<ProductoTerminado logs={productoLogs} setLogs={setProductoLogs} ordenes={ordenes} sup={sup}/>}
-      {!dbLoading&&vista==="inventario"&&<Inventario mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} sup={sup}/>}
+      {!dbLoading&&vista==="almacen"&&<AlmacenUnificado logs={productoLogs} setLogs={setProductoLogs} ordenes={ordenes} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs}/>}
     </div>
 
     {/* Bottom nav */}
