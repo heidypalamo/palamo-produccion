@@ -449,7 +449,7 @@ function LogRow({log,onDel}){
           {log.materialRecuperado&&<Pair k="Recuperado" v={log.materialRecuperado+" lbs"} color={B.green}/>}
           {log.notas&&<Pair k="Notas" v={log.notas}/>}
         </div>
-        <Btn ch="Eliminar" fn={()=>onDel(log.id)} color={B.red} outline small/>
+        <Btn ch="Eliminar" fn={()=>{if(confirm("¿Seguro que desea eliminar este registro?"))onDel(log.id);}} color={B.red} outline small/>
       </div>)}
     </div>
   }/>);
@@ -815,7 +815,8 @@ function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,set
         </div>}
 
         {form.etapa==="impresion"&&<div>
-          <F label="Producto / Cliente" value={form.cliente} onChange={set("cliente")} placeholder="Nombre"/>
+          <S label="Producto" value={form.producto} onChange={set("producto")} options={productosDeOrdenes(ordenes).map(p=>({v:p,l:p}))}/>
+          <div style={{marginTop:12}}><F label="Cliente" value={form.cliente} onChange={set("cliente")} placeholder="Nombre del cliente"/></div>
           <div style={{marginTop:12,display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <F label="Entrada (lbs)" value={form.lbsImpresion} onChange={set("lbsImpresion")} type="number" placeholder="0"/>
             <F label="Rollos Impresos" value={form.rollosProducidos} onChange={set("rollosProducidos")} type="number" placeholder="0"/>
@@ -1057,7 +1058,7 @@ function Ordenes({ordenes,setOrdenes,productoLogs,setProductoLogs,sup}){
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           {o.etapa!=="listo"&&o.etapa!=="enviado"&&<Btn ch={"Avanzar → "+(ETIQ_ORDEN[ETAPAS_ORDEN[ei+1]]||"")} fn={()=>avanzar(o)} color={B.green} small/>}
           {o.etapa==="listo"&&envioId!==o.id&&<Btn ch="📦 Enviar" fn={()=>iniciarEnvio(o)} color={B.navy} small/>}
-          <Btn ch="Eliminar" fn={()=>eliminar(o.id)} color={B.red} outline small/>
+          <Btn ch="Eliminar" fn={()=>{if(confirm("¿Seguro que desea eliminar esta orden?"))eliminar(o.id);}} color={B.red} outline small/>
         </div>
       </div>}
     </div>}/>);
@@ -1476,7 +1477,7 @@ function ProductoTerminado({logs,setLogs,ordenes,sup}){
             <div style={{textAlign:"right",flexShrink:0}}>
               <div style={{color:isEnv?B.navy:B.green,fontWeight:900,fontSize:16}}>{isEnv?"-":"+"}  {l.cantidad.toLocaleString()}</div>
               <div style={{color:B.textLight,fontSize:10}}>{l.unidad}</div>
-              <button onClick={()=>del(l.id)} style={{background:"none",border:"none",color:B.red+"88",fontSize:11,cursor:"pointer",marginTop:2}}>✕</button>
+              <button onClick={()=>{if(confirm("¿Seguro que desea eliminar este producto?"))del(l.id);}} style={{background:"none",border:"none",color:B.red+"88",fontSize:11,cursor:"pointer",marginTop:2}}>✕</button>
             </div>
           </div>);
         })
@@ -1824,7 +1825,7 @@ function GastosModule({gastos,setGastos,sup}){
         {g.descripcion&&<div style={{color:B.textMid,fontSize:13}}>{g.descripcion}</div>}
         {g.proveedor&&<div style={{color:B.textLight,fontSize:12}}>Proveedor: {g.proveedor}</div>}
       </div>
-      <Btn ch="✕" fn={()=>del(g.id)} color={B.red} outline small/>
+      <Btn ch="✕" fn={()=>{if(confirm("¿Seguro que desea eliminar este gasto?"))del(g.id);}} color={B.red} outline small/>
     </div>}/>)}
   </div>);
 }
@@ -2009,7 +2010,7 @@ function Facturacion({facturas,setFacturas,productoLogs,ordenes,sup,pagos,setPag
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <Btn ch="📄 PDF" fn={()=>printFactura(f)} color={B.navy} small/>
           {f.estado==="pendiente"&&<Btn ch="Marcar Pagada" fn={()=>marcarPagada(f)} small/>}
-          <Btn ch="Eliminar" fn={()=>del(f.id)} color={B.red} outline small/>
+          <Btn ch="Eliminar" fn={()=>{if(confirm("¿Seguro que desea eliminar esta factura?"))del(f.id);}} color={B.red} outline small/>
         </div>
       </div>}
     </div>}/>)}
@@ -2172,7 +2173,7 @@ function CuentasPagarModule({cuentasPagar,setCuentasPagar,pagos,setPagos,sup}){
         <div style={{display:"flex",gap:8}}><Btn ch="Pagar" fn={()=>registrarPago(cp)} small/><Btn ch="Cancelar" fn={()=>setPayId(null)} outline small/></div>
       </div>:<div style={{display:"flex",gap:8,marginTop:6}}>
         <Btn ch="Registrar Pago" fn={()=>setPayId(cp.id)} small/>
-        <Btn ch="Eliminar" fn={()=>del(cp.id)} color={B.red} outline small/>
+        <Btn ch="Eliminar" fn={()=>{if(confirm("¿Seguro que desea eliminar esta cuenta?"))del(cp.id);}} color={B.red} outline small/>
       </div>)}
     </div>}/>)}
     {!cuentasPagar.length&&<div style={{textAlign:"center",padding:30,color:B.textLight}}>No hay cuentas por pagar registradas</div>}
