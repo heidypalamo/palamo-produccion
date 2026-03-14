@@ -1182,7 +1182,7 @@ function Rendimiento({regs,resinaLogs}){
 
   // Aggregate by machine
   const byMaquina=useMemo(()=>{
-    const allRegs=regs.filter(filtFecha).filter(r=>etapa==="all"||r.etapa===etapa);
+    const allRegs=regs.filter(filtFecha).filter(r=>etapa==="all"||r.etapa===etapa).filter(r=>maquinaFil==="all"||r.maquina===maquinaFil);
     const m={};
     todasMaquinas.forEach(mq=>{
       const etapaKey=Object.entries(MAQUINAS).find(([,v])=>v.includes(mq))?.[0]||"";
@@ -1200,7 +1200,7 @@ function Rendimiento({regs,resinaLogs}){
       if(r.empleado)m[r.maquina].operadores.add(r.empleado.split(" ")[0]);
     });
     return Object.values(m).sort((a,b)=>b.registros-a.registros);
-  },[regs,etapa,periodo,fechaCustom]);
+  },[regs,etapa,periodo,fechaCustom,maquinaFil]);
 
   const bySup=useMemo(()=>{
     const m={};
@@ -1777,12 +1777,13 @@ function PanelProduccion({regs,ordenes,sup,setVista}){
   return null;
 }
 
-function Dashboard({regs,mat,ordenes,resinaLogs,setVista}){
+function Dashboard({regs,mat,ordenes,resinaLogs,setVista,productoLogs}){
   const tP=regs.filter(r=>r.etapa==="extrusion").reduce((s,r)=>s+(Number(r.pelicula)||0),0);
   const tI=regs.filter(r=>r.etapa==="impresion").reduce((s,r)=>s+(Number(r.lbsImpresion)||0),0);
   const tD=regs.reduce((s,r)=>s+(Number(r.desperdicio)||0)+(Number(r.desperdicioImpresion)||0)+(Number(r.desperdicioSlitter)||0)+(Number(r.desperdicioCorte)||0),0);
   const tF=regs.filter(r=>r.etapa==="cortadora").reduce((s,r)=>s+(Number(r.bolsasProducidas)||0),0);
   const tR=regs.filter(r=>r.etapa==="reciclaje").reduce((s,r)=>s+(Number(r.materialRecuperado)||0),0);
+  const tPT=(()=>{const m={};(productoLogs||[]).forEach(l=>{if(!m[l.producto])m[l.producto]={lbsIn:0,lbsOut:0};if(l.unidad==="lbs"){if(l.tipo==="entrada")m[l.producto].lbsIn+=l.cantidad;else if(l.tipo==="salida")m[l.producto].lbsOut+=l.cantidad;}});(regs||[]).forEach(r=>{if(r.producto&&r.etapa==="slitter"&&r.lbsSlitter){if(!m[r.producto])m[r.producto]={lbsIn:0,lbsOut:0};m[r.producto].lbsIn+=Number(r.lbsSlitter)||0;}});return Object.values(m).reduce((s,p)=>s+Math.max(0,p.lbsIn-p.lbsOut),0);})();
   const yld=tP>0?((tP/(tP+tD))*100).toFixed(1):null;
   const alts=mat.filter(m=>m.stockActual<=m.stockMinimo);
   const ordenesActivas=(ordenes||[]).filter(o=>o.etapa!=="listo");
@@ -1798,20 +1799,12 @@ function Dashboard({regs,mat,ordenes,resinaLogs,setVista}){
     </div>}
 
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-      <Stat label="Extrusión" value={tP.toFixed(0)} unit="lbs" color={B.teal} sub="Producción"/>
-      <Stat label="Impresión" value={tI.toFixed(0)} unit="lbs" color={B.navy} sub="Procesado"/>
       <Stat label="Fundas" value={tF.toLocaleString()} unit="uds" color={B.tealDark} sub="Cortadora"/>
-      <Stat label="Desperdicio" value={tD.toFixed(0)} unit="lbs" color={B.red} sub="Total"/>
+      <Stat label="Prod. Term." value={tPT.toLocaleString()} unit="lbs" color={B.green} sub="En Almacén"/>
     </div>
 
     {yld&&<Card accent={B.green} ch={<div><div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:10}}>Eficiencia de Extrusión</div><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{flex:1,height:10,background:B.bg,borderRadius:5,overflow:"hidden"}}><div style={{width:yld+"%",height:"100%",background:"linear-gradient(90deg,"+B.teal+","+B.green+")",borderRadius:5}}/></div><span style={{color:B.green,fontWeight:800,fontSize:20}}>{yld}%</span></div></div>}/>}
 
-    <Card ch={<div>
-      <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.8,textTransform:"uppercase",marginBottom:12}}>Flujo de Producción</div>
-      <div style={{display:"flex",overflowX:"auto",gap:0,paddingBottom:4}}>
-        {ETAPAS.map((e,i)=>{const n=e==="mezcla"?resinaLogs.length:regs.filter(r=>r.etapa===e).length;const c=CE[e];return(<div key={e} style={{display:"flex",alignItems:"center",flexShrink:0}}><div style={{background:B.bg,border:"1.5px solid "+c+"44",borderRadius:12,padding:"12px 10px",textAlign:"center",minWidth:72}}><div style={{fontSize:20}}>{ICONOS[e]}</div><div style={{color:c,fontSize:9,fontWeight:700,textTransform:"uppercase",margin:"3px 0"}}>{ETIQUETAS[e]}</div><div style={{color:B.textDark,fontWeight:800,fontSize:20}}>{n}</div></div>{i<ETAPAS.length-1&&<div style={{color:B.border,fontSize:18,padding:"0 3px"}}>›</div>}</div>);})}
-      </div>
-    </div>}/>
 
     <Card ch={<div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -2458,7 +2451,7 @@ function App(){
     <div style={{padding:"16px 16px 0"}}>
       {dbLoading&&<div style={{textAlign:"center",padding:40,color:B.textLight}}><div style={{fontSize:32,marginBottom:8}}>⏳</div><div style={{fontSize:14}}>Cargando datos...</div></div>}
       {!dbLoading&&vista==="dashboard"&&sup.rol==="operador"&&<PanelProduccion regs={regs} ordenes={ordenes} sup={sup} setVista={setVista}/>}
-      {!dbLoading&&vista==="dashboard"&&sup.rol!=="operador"&&<Dashboard regs={regs} mat={mat} ordenes={ordenes} resinaLogs={resinaLogs} setVista={setVista}/>}
+      {!dbLoading&&vista==="dashboard"&&sup.rol!=="operador"&&<Dashboard regs={regs} mat={mat} ordenes={ordenes} resinaLogs={resinaLogs} setVista={setVista} productoLogs={productoLogs}/>}
       {!dbLoading&&vista==="registro"&&<Registro sup={sup} regs={regs} setRegs={setRegs} resinaLogs={resinaLogs} setResinaLogs={setResinaLogs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} productoLogs={productoLogs} setProductoLogs={setProductoLogs} ordenes={ordenes} setOrdenes={setOrdenes}/>}
       {!dbLoading&&vista==="ordenes"&&<Ordenes ordenes={ordenes} setOrdenes={setOrdenes} productoLogs={productoLogs} setProductoLogs={setProductoLogs} sup={sup}/>}
       {!dbLoading&&vista==="rendimiento"&&<Rendimiento regs={regs} resinaLogs={resinaLogs}/>}
