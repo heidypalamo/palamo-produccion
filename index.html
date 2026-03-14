@@ -661,7 +661,7 @@ function Inventario({mat,setMat,movs,setMovs,sup}){
 }
 
 // ── Registro (now includes Mezcla as first stage + auto-stock) ───────────────
-function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,setMovs,productoLogs,setProductoLogs,ordenes}){
+function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,setMovs,productoLogs,setProductoLogs,ordenes,setOrdenes}){
   const [form,setForm]=useState(F0);
   const [saved,setSaved]=useState(false);
   const [filt,setFilt]=useState("all");
@@ -714,6 +714,29 @@ function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,set
       const entry={id:Date.now()+2,fecha:form.fecha,producto:form.producto||"Rollo Transparente",cantidad:Number(form.rollosProducidos),unidad:"rollos",tipo:"entrada",destino:"",ordenId:"",notas:"Auto: Slitter "+form.maquina,supervisor:sup.nombre,registroRef:r.id};
       setProductoLogs(p=>[entry,...p]);
       dbSaveProducto(entry);
+    }
+
+    // Auto-advance orders based on production stage completion
+    if(["impresion","slitter"].includes(form.etapa)&&form.producto){
+      const allRegs=[...regs,r]; // include the just-saved registro
+      const stageMap={impresion:"impresion",slitter:"listo"}; // impresion done → advance to slitter; slitter done → advance to listo
+      const nextStage=stageMap[form.etapa];
+      const targetEtapa=form.etapa==="impresion"?"impresion":"slitter"; // order must be at this stage or earlier
+      (ordenes||[]).forEach(o=>{
+        // Only advance orders that are at the stage before the target
+        const oIdx=ETAPAS_ORDEN.indexOf(o.etapa);
+        const targetIdx=ETAPAS_ORDEN.indexOf(form.etapa);
+        if(oIdx>targetIdx)return; // already past this stage
+        // Check if all order items have at least one registro at this stage
+        const items=(o.items||[]).filter(it=>it.producto);
+        if(items.length===0)return;
+        const allDone=items.every(it=>allRegs.some(reg=>reg.etapa===form.etapa&&reg.producto===it.producto));
+        if(allDone){
+          const next=form.etapa==="slitter"?"listo":ETAPAS_ORDEN[ETAPAS_ORDEN.indexOf(form.etapa)+1];
+          setOrdenes(p=>p.map(x=>x.id===o.id?Object.assign({},x,{etapa:next}):x));
+          dbUpdateOrder(o.id,{etapa:next});
+        }
+      });
     }
 
     setSaved(true);
@@ -1323,7 +1346,7 @@ function Rendimiento({regs,resinaLogs}){
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 // ── Almacén (Producto Terminado + Materia Prima merged) ──────────────────────
-function AlmacenUnificado({logs,setLogs,ordenes,sup,mat,setMat,movs,setMovs}){
+function AlmacenUnificado({logs,setLogs,ordenes,sup,mat,setMat,movs,setMovs,regs}){
   const [seccion,setSeccion]=useState("terminado"); // "terminado" | "prima"
   return(<div style={{display:"flex",flexDirection:"column",gap:16}}>
     <div><h2 style={{color:B.textDark,fontSize:20,fontWeight:800,margin:"0 0 2px"}}>📦 Almacén</h2><p style={{color:B.textLight,fontSize:13,margin:0}}>Producto terminado y materia prima</p></div>
@@ -1331,12 +1354,12 @@ function AlmacenUnificado({logs,setLogs,ordenes,sup,mat,setMat,movs,setMovs}){
       <button onClick={()=>setSeccion("terminado")} style={{flex:1,background:seccion==="terminado"?"#fff":"transparent",border:"none",borderRadius:10,padding:"10px 4px",color:seccion==="terminado"?B.textDark:B.textLight,fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:seccion==="terminado"?"0 1px 4px rgba(0,0,0,.1)":"none"}}>🏭 Producto Terminado</button>
       <button onClick={()=>setSeccion("prima")} style={{flex:1,background:seccion==="prima"?"#fff":"transparent",border:"none",borderRadius:10,padding:"10px 4px",color:seccion==="prima"?B.textDark:B.textLight,fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:seccion==="prima"?"0 1px 4px rgba(0,0,0,.1)":"none"}}>📦 Materia Prima</button>
     </div>
-    {seccion==="terminado"&&<ProductoTerminado logs={logs} setLogs={setLogs} ordenes={ordenes} sup={sup}/>}
+    {seccion==="terminado"&&<ProductoTerminado logs={logs} setLogs={setLogs} ordenes={ordenes} sup={sup} regs={regs}/>}
     {seccion==="prima"&&<Inventario mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} sup={sup}/>}
   </div>);
 }
 
-function ProductoTerminado({logs,setLogs,ordenes,sup}){
+function ProductoTerminado({logs,setLogs,ordenes,sup,regs}){
   const [modo,setModo]=useState(false); // "entrada" | "salida" | false
   const [saved,setSaved]=useState(false);
   const [filProd,setFilProd]=useState("all");
@@ -1344,19 +1367,39 @@ function ProductoTerminado({logs,setLogs,ordenes,sup}){
   const [form,setForm]=useState(F0p);
   const set=k=>v=>setForm(f=>Object.assign({},f,{[k]:v}));
 
-  // Summary per product: total produced, total shipped, in warehouse
+  // Summary per product: total produced, total shipped, in warehouse, lbs, order completion
+  // Summary per product — uses extrusión registros for lbs produced, producto_terminado for uds/rollos
   const resumen=React.useMemo(()=>{
     const m={};
-    productosDeOrdenes(ordenes).filter(p=>p!=="Otro").forEach(p=>{m[p]={producto:p,producido:0,enviado:0,ajuste:0};});
+    productosDeOrdenes(ordenes).filter(p=>p!=="Otro").forEach(p=>{m[p]={producto:p,producido:0,enviado:0,lbsProducido:0,lbsEnviado:0,ordenadoLbs:0};});
+    // Sum uds/rollos from producto_terminado logs
     logs.forEach(l=>{
-      if(!m[l.producto])m[l.producto]={producto:l.producto,producido:0,enviado:0,ajuste:0};
+      if(!m[l.producto])m[l.producto]={producto:l.producto,producido:0,enviado:0,lbsProducido:0,lbsEnviado:0,ordenadoLbs:0};
       if(l.tipo==="entrada")m[l.producto].producido+=l.cantidad;
       else if(l.tipo==="salida")m[l.producto].enviado+=l.cantidad;
-      else if(l.tipo==="ajuste")m[l.producto].ajuste+=l.cantidad;
+      // Track lbs entries from producto_terminado too
+      if(l.unidad==="lbs"){
+        if(l.tipo==="entrada")m[l.producto].lbsProducido+=l.cantidad;
+        else if(l.tipo==="salida")m[l.producto].lbsEnviado+=l.cantidad;
+      }
     });
-    return Object.values(m).map(p=>({...p,almacen:p.producido-p.enviado+p.ajuste}))
-      .filter(p=>p.producido>0||logs.some(l=>l.producto===p.producto));
-  },[logs]);
+    // Sum lbs from slitter registros (lbsSlitter = lbs entrada at slitter stage)
+    (regs||[]).forEach(r=>{
+      if(r.producto&&r.etapa==="slitter"&&r.lbsSlitter&&m[r.producto]){
+        m[r.producto].lbsProducido+=Number(r.lbsSlitter)||0;
+      }
+    });
+    // Sum ordered lbs from ordenes
+    (ordenes||[]).forEach(o=>(o.items||[]).forEach(it=>{
+      if(it.producto&&m[it.producto]&&(it.unidad==="lbs"||!it.unidad)){
+        m[it.producto].ordenadoLbs+=Number(it.cantidad)||0;
+      }
+    }));
+    return Object.values(m).map(p=>({...p,
+      almacen:p.producido-p.enviado,
+      lbsDisp:p.lbsProducido-p.lbsEnviado
+    })).filter(p=>p.producido>0||p.lbsProducido>0||p.ordenadoLbs>0);
+  },[logs,ordenes,regs]);
 
   const save=()=>{
     if(!form.cantidad||!form.producto)return;
@@ -1388,27 +1431,39 @@ function ProductoTerminado({logs,setLogs,ordenes,sup}){
     {resumen.length>0&&<div style={{display:"flex",flexDirection:"column",gap:8}}>
       {resumen.map(r=>{
         const pct=r.producido>0?(r.enviado/r.producido*100).toFixed(0):0;
+        const pctOrden=r.ordenadoLbs>0?Math.min(100,(r.lbsProducido/r.ordenadoLbs*100)).toFixed(0):0;
         const enAlm=Math.max(0,r.almacen);
+        const lbsDisp=Math.max(0,r.lbsDisp);
         const alerta=enAlm>0&&r.producido>0;
         return(<Card key={r.producto} style={{padding:"14px 16px"}} ch={<div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
             <div>
               <div style={{color:B.textDark,fontSize:15,fontWeight:800}}>{r.producto}</div>
               <div style={{display:"flex",gap:12,marginTop:3}}>
-                <span style={{color:B.green,fontSize:12,fontWeight:700}}>✅ Producido: {r.producido.toLocaleString()}</span>
+                <span style={{color:B.green,fontSize:12,fontWeight:700}}>✅ Producido: {r.producido.toLocaleString()} uds</span>
                 <span style={{color:B.navy,fontSize:12,fontWeight:700}}>🚢 Enviado: {r.enviado.toLocaleString()}</span>
               </div>
             </div>
             <div style={{textAlign:"right"}}>
-              <div style={{color:alerta?B.amber:B.textLight,fontSize:22,fontWeight:900}}>{enAlm.toLocaleString()}</div>
-              <div style={{color:alerta?B.amber:B.textLight,fontSize:10,fontWeight:700}}>{r.unidad||"uds"} en almacén</div>
+              <div style={{color:alerta?B.amber:B.textLight,fontSize:22,fontWeight:900}}>{lbsDisp>0?lbsDisp.toLocaleString():enAlm.toLocaleString()}</div>
+              <div style={{color:alerta?B.amber:B.textLight,fontSize:10,fontWeight:700}}>{lbsDisp>0?"lbs disponibles":"uds en almacén"}</div>
             </div>
           </div>
-          {r.producido>0&&<div style={{height:6,background:B.bg,borderRadius:3,overflow:"hidden"}}>
-            <div style={{width:pct+"%",height:"100%",background:"linear-gradient(90deg,"+B.teal+","+B.green+")",borderRadius:3}}/>
+          {r.ordenadoLbs>0&&<div style={{marginBottom:6}}>
+            <div style={{height:6,background:B.bg,borderRadius:3,overflow:"hidden"}}>
+              <div style={{width:pctOrden+"%",height:"100%",background:"linear-gradient(90deg,#7C3AED,"+B.navy+")",borderRadius:3}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:B.textLight,marginTop:3}}>
+              <span>Orden: {r.ordenadoLbs.toLocaleString()} lbs</span><span style={{color:"#7C3AED",fontWeight:700}}>{pctOrden}% ({r.lbsProducido.toLocaleString()}/{r.ordenadoLbs.toLocaleString()} lbs)</span>
+            </div>
           </div>}
-          {r.producido>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:B.textLight,marginTop:4}}>
-            <span>0</span><span style={{color:B.teal,fontWeight:700}}>{pct}% enviado</span><span>{r.producido.toLocaleString()}</span>
+          {r.producido>0&&<div>
+            <div style={{height:6,background:B.bg,borderRadius:3,overflow:"hidden"}}>
+              <div style={{width:pct+"%",height:"100%",background:"linear-gradient(90deg,"+B.teal+","+B.green+")",borderRadius:3}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:B.textLight,marginTop:3}}>
+              <span>0</span><span style={{color:B.teal,fontWeight:700}}>{pct}% enviado</span><span>{r.producido.toLocaleString()}</span>
+            </div>
           </div>}
         </div>}/>);
       })}
@@ -2404,10 +2459,10 @@ function App(){
       {dbLoading&&<div style={{textAlign:"center",padding:40,color:B.textLight}}><div style={{fontSize:32,marginBottom:8}}>⏳</div><div style={{fontSize:14}}>Cargando datos...</div></div>}
       {!dbLoading&&vista==="dashboard"&&sup.rol==="operador"&&<PanelProduccion regs={regs} ordenes={ordenes} sup={sup} setVista={setVista}/>}
       {!dbLoading&&vista==="dashboard"&&sup.rol!=="operador"&&<Dashboard regs={regs} mat={mat} ordenes={ordenes} resinaLogs={resinaLogs} setVista={setVista}/>}
-      {!dbLoading&&vista==="registro"&&<Registro sup={sup} regs={regs} setRegs={setRegs} resinaLogs={resinaLogs} setResinaLogs={setResinaLogs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} productoLogs={productoLogs} setProductoLogs={setProductoLogs} ordenes={ordenes}/>}
+      {!dbLoading&&vista==="registro"&&<Registro sup={sup} regs={regs} setRegs={setRegs} resinaLogs={resinaLogs} setResinaLogs={setResinaLogs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} productoLogs={productoLogs} setProductoLogs={setProductoLogs} ordenes={ordenes} setOrdenes={setOrdenes}/>}
       {!dbLoading&&vista==="ordenes"&&<Ordenes ordenes={ordenes} setOrdenes={setOrdenes} productoLogs={productoLogs} setProductoLogs={setProductoLogs} sup={sup}/>}
       {!dbLoading&&vista==="rendimiento"&&<Rendimiento regs={regs} resinaLogs={resinaLogs}/>}
-      {!dbLoading&&vista==="almacen"&&<AlmacenUnificado logs={productoLogs} setLogs={setProductoLogs} ordenes={ordenes} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs}/>}
+      {!dbLoading&&vista==="almacen"&&<AlmacenUnificado logs={productoLogs} setLogs={setProductoLogs} ordenes={ordenes} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} regs={regs}/>}
       {!dbLoading&&vista==="contabilidad"&&isContador(sup)&&<Contabilidad facturas={facturas} setFacturas={setFacturas} cuentasPagar={cuentasPagar} setCuentasPagar={setCuentasPagar} gastos={gastos} setGastos={setGastos} pagos={pagos} setPagos={setPagos} productoLogs={productoLogs} ordenes={ordenes} regs={regs} resinaLogs={resinaLogs} movs={movs} sup={sup}/>}
     </div>
 
