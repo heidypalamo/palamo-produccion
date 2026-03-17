@@ -80,13 +80,25 @@ const MAQUINAS={
   impresion:["IMP-1","IMP-2"],
   slitter:["SLI-1","SLI-2"],
   cortadora:["COR-1","COR-2","COR-3","COR-4","COR-5"],
-  reciclaje:["REC-1"]
+  reciclaje:["REC-1"],
+  maquina:["EXT-1","EXT-2","EXT-3","EXT-4","EXT-5","IMP-1","IMP-2","SLI-1","SLI-2","COR-1","COR-2","COR-3","COR-4","COR-5","REC-1","MEZ-1"]
 };
 // Production flow stages — mezcla is first
-const ETAPAS=["mezcla","extrusion","impresion","slitter","cortadora","reciclaje"];
-const ETIQUETAS={mezcla:"Mezcla",extrusion:"Extrusión",impresion:"Impresión",slitter:"Slitter",cortadora:"Cortadora",reciclaje:"Reciclaje"};
-const ICONOS={mezcla:"🧪",extrusion:"⚙️",impresion:"🖨️",slitter:"✂️",cortadora:"🛠️",reciclaje:"♻️"};
-const CE={mezcla:"#7C3AED",extrusion:B.teal,impresion:B.navy,slitter:B.tealDark,cortadora:"#4E7C59",reciclaje:"#6B7280"};
+const ETAPAS=["mezcla","extrusion","impresion","slitter","cortadora","reciclaje","maquina"];
+const ETIQUETAS={mezcla:"Mezcla",extrusion:"Extrusión",impresion:"Impresión",slitter:"Slitter",cortadora:"Cortadora",reciclaje:"Reciclaje",maquina:"Máquina"};
+const ICONOS={mezcla:"🧪",extrusion:"⚙️",impresion:"🖨️",slitter:"✂️",cortadora:"🛠️",reciclaje:"♻️",maquina:"🔧"};
+const CE={mezcla:"#7C3AED",extrusion:B.teal,impresion:B.navy,slitter:B.tealDark,cortadora:"#4E7C59",reciclaje:"#6B7280",maquina:"#B45309"};
+const MAQUINA_TODAS=[...new Set(Object.values(MAQUINAS).flat())].sort();
+const MOTIVOS_PARADA=["Mantenimiento preventivo","Falla mecánica","Falla eléctrica","Cambio de pieza","Ajuste/Calibración","Otro"];
+
+// ── Production Flow (Flujo) Constants ────────────────────────────────────────
+const PROD_ETAPAS=["mezcla","extrusion","cortadora","impresion","slitter"];
+const PROD_ETIQUETAS={mezcla:"Mezcla",extrusion:"Extrusión",cortadora:"Cortadora",impresion:"Impresora",slitter:"Slitter"};
+const PROD_ICONOS={mezcla:"🧪",extrusion:"⚙️",cortadora:"🛠️",impresion:"🖨️",slitter:"✂️"};
+const PROD_COLORES={mezcla:"#7C3AED",extrusion:B.teal,cortadora:"#4E7C59",impresion:B.navy,slitter:B.tealDark};
+const LOTE_STAGE_INIT=()=>({lbs_in:0,lbs_out:0,desperdicio:0,ldpe:0,mlldpe:0,empleado:"",maquina:"",turno:"",notas:"",ordenId:"",producto:"",cliente:"",saved:false});
+const newLoteEtapas=()=>({mezcla:LOTE_STAGE_INIT(),extrusion:LOTE_STAGE_INIT(),cortadora:LOTE_STAGE_INIT(),impresion:LOTE_STAGE_INIT(),slitter:LOTE_STAGE_INIT()});
+const PREV_STAGE={mezcla:null,extrusion:"mezcla",cortadora:"extrusion",impresion:"extrusion",slitter:"impresion"};
 
 const PRODUCTOS_DEFAULT=[
   "Eau Lakay","Gerna Dlo","Funda de Agua","Funda de Pan",
@@ -126,6 +138,7 @@ const F0={
   fecha:new Date().toISOString().split("T")[0],
   maquina:"MEZ-1",
   producto:"Funda de Agua",
+  tipoProducto:"Rollo de Funda de Agua",
   cliente:"",
   empleado:"",
   turno:"☀️ Turno Día",
@@ -146,7 +159,11 @@ const F0={
   notas:"",
   ldpeMezcla:"",
   mlldpeMezcla:"",
-  lote:""
+  lote:"",
+  motivoParada:"",
+  piezasNecesarias:"",
+  piezasCambiadas:"",
+  duracionParada:""
 };
 
 const iS={background:"#F8FAFC",border:"1.5px solid "+B.border,borderRadius:10,padding:"13px 14px",color:B.textDark,fontSize:16,outline:"none",width:"100%",boxSizing:"border-box",WebkitAppearance:"none"};
@@ -177,6 +194,10 @@ async function dbSave(r){
       desperdicio_corte:r.desperdicioCorte?Number(r.desperdicioCorte):null,
       desperdicio_reciclado:r.desperdicioReciclado?Number(r.desperdicioReciclado):null,
       material_recuperado:r.materialRecuperado?Number(r.materialRecuperado):null,
+      motivo_parada:r.motivoParada||null,
+      piezas_necesarias:r.piezasNecesarias||null,
+      piezas_cambiadas:r.piezasCambiadas||null,
+      duracion_parada:r.duracionParada?Number(r.duracionParada):null,
       notas:r.notas||null
     })});
   }catch(e){console.error("dbSave",e);}
@@ -198,6 +219,8 @@ async function dbLoad(){
       anchoRollo:x.ancho_rollo,lbsCortadora:x.lbs_cortadora,
       bolsasProducidas:x.bolsas_producidas,desperdicioCorte:x.desperdicio_corte,
       desperdicioReciclado:x.desperdicio_reciclado,materialRecuperado:x.material_recuperado,
+      motivoParada:x.motivo_parada,piezasNecesarias:x.piezas_necesarias,
+      piezasCambiadas:x.piezas_cambiadas,duracionParada:x.duracion_parada,
       notas:x.notas
     })):[];
   }catch(e){console.error("dbLoad",e);return[];}
@@ -385,6 +408,70 @@ async function dbDeletePago(id){
   catch(e){}
 }
 
+// ── Lotes DB ─────────────────────────────────────────────────────────────────
+async function dbSaveLote(l){
+  try{await fetch(SUPA_URL+"/rest/v1/lotes",{method:"POST",headers:Object.assign({},SH,{"Prefer":"return=minimal"}),body:JSON.stringify({
+    id:String(l.id),numero:l.numero,fecha:l.fecha,creado_por:l.creadoPor,etapas:JSON.stringify(l.etapas)
+  })});}catch(e){console.error("dbSaveLote",e);}
+}
+async function dbLoadLotes(){
+  try{
+    const r=await fetch(SUPA_URL+"/rest/v1/lotes?order=created_at.asc&limit=200",{headers:SH});
+    const rows=await r.json();
+    return Array.isArray(rows)?rows.map(x=>({
+      id:x.id,numero:x.numero,fecha:x.fecha,creadoPor:x.creado_por,
+      etapas:typeof x.etapas==="string"?JSON.parse(x.etapas):x.etapas
+    })):[];
+  }catch(e){console.error("dbLoadLotes",e);return[];}
+}
+async function dbUpdateLote(id,patch){
+  try{await fetch(SUPA_URL+"/rest/v1/lotes?id=eq."+id,{method:"PATCH",headers:Object.assign({},SH,{"Prefer":"return=minimal"}),body:JSON.stringify(patch)});}
+  catch(e){console.error("dbUpdateLote",e);}
+}
+async function dbDeleteLote(id){
+  try{await fetch(SUPA_URL+"/rest/v1/lotes?id=eq."+id,{method:"DELETE",headers:SH});}
+  catch(e){}
+}
+
+// ── Production Flow Helpers ──────────────────────────────────────────────────
+function nextLoteNumero(lotes){
+  const max=lotes.reduce((m,l)=>{const n=parseInt(l.numero,10);return n>m?n:m;},0);
+  return String(max+1).padStart(3,"0");
+}
+function isStageUnlocked(lote,etapa){
+  const prev=PREV_STAGE[etapa];
+  if(!prev)return true;
+  return(lote.etapas[prev].lbs_out||0)>0;
+}
+function disponibleLbs(lotes,loteIdx,etapa){
+  const prevEtapa=PREV_STAGE[etapa];
+  if(!prevEtapa)return null;
+  let produced=0,consumed=0;
+  for(let i=0;i<=loteIdx;i++){
+    produced+=(lotes[i].etapas[prevEtapa].lbs_out||0);
+    if(i<loteIdx)consumed+=(lotes[i].etapas[etapa].lbs_in||0);
+  }
+  return Math.max(0,produced-consumed);
+}
+function carryOverLbs(lotes,loteIdx,etapa){
+  const prevEtapa=PREV_STAGE[etapa];
+  if(!prevEtapa||loteIdx===0)return 0;
+  let surplus=0;
+  for(let i=0;i<loteIdx;i++){
+    surplus+=(lotes[i].etapas[prevEtapa].lbs_out||0)-(lotes[i].etapas[etapa].lbs_in||0);
+  }
+  return Math.max(0,surplus);
+}
+function eficiencia(stg){
+  if(!stg.lbs_in||!stg.lbs_out)return null;
+  return(stg.lbs_out/stg.lbs_in)*100;
+}
+function efColor(pct){
+  if(pct>=95)return B.green;
+  if(pct>=85)return B.amber;
+  return B.red;
+}
+
 // ── UI Primitives ─────────────────────────────────────────────────────────────
 const Card=({ch,style,accent,onClick})=>{
   const s=Object.assign({background:"#fff",borderRadius:16,padding:"16px",boxShadow:"0 1px 3px rgba(0,0,0,.06)",border:"1.5px solid "+(accent||B.border)},style||{});
@@ -428,7 +515,7 @@ function LogRow({log,onDel}){
             {log.turno&&<TurnoBadge turno={log.turno}/>}
           </div>
           <div style={{color:B.textMid,fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-            {log.empleado?log.empleado+" · ":""}{log.producto||log.cliente||"—"} · {log.fecha}
+            {log.empleado?log.empleado+" · ":""}{log.etapa==="maquina"?(log.motivoParada||"Reporte"):log.producto||log.cliente||"—"} · {log.fecha}
           </div>
         </div>
         <span style={{color:B.textLight,fontSize:14,flexShrink:0}}>{exp?"▲":"▼"}</span>
@@ -447,6 +534,10 @@ function LogRow({log,onDel}){
           {log.bolsasProducidas&&<Pair k="Fundas" v={Number(log.bolsasProducidas).toLocaleString()} color={B.teal}/>}
           {log.desperdicioReciclado&&<Pair k="Entrada rec." v={log.desperdicioReciclado+" lbs"}/>}
           {log.materialRecuperado&&<Pair k="Recuperado" v={log.materialRecuperado+" lbs"} color={B.green}/>}
+          {log.motivoParada&&<Pair k="Motivo" v={log.motivoParada}/>}
+          {log.duracionParada&&<Pair k="Duración" v={log.duracionParada+" hrs"} color={B.red}/>}
+          {log.piezasNecesarias&&<Pair k="Piezas necesarias" v={log.piezasNecesarias}/>}
+          {log.piezasCambiadas&&<Pair k="Piezas cambiadas" v={log.piezasCambiadas}/>}
           {log.notas&&<Pair k="Notas" v={log.notas}/>}
         </div>
         <Btn ch="Eliminar" fn={()=>{if(confirm("¿Seguro que desea eliminar este registro?"))onDel(log.id);}} color={B.red} outline small/>
@@ -826,6 +917,7 @@ function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,set
 
         {/* Extrusion fields */}
         {form.etapa==="extrusion"&&<div>
+          <div style={{marginBottom:12}}><S label="Tipo de Producto" value={form.tipoProducto} onChange={set("tipoProducto")} options={[{v:"Rollo de Funda de Agua",l:"Rollo de Funda de Agua"},{v:"Emballaje",l:"Emballaje"},{v:"Panaderia",l:"Panaderia"},{v:"Tubo",l:"Tubo"},{v:"Otro",l:"Otro"}]}/></div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <F label="Película Total (lbs)" value={form.pelicula} onChange={set("pelicula")} type="number" placeholder="0"/>
             <F label="Rollos Producidos" value={form.rollosProducidos} onChange={set("rollosProducidos")} type="number" placeholder="0"/>
@@ -872,6 +964,13 @@ function Registro({sup,regs,setRegs,resinaLogs,setResinaLogs,mat,setMat,movs,set
         {form.etapa==="reciclaje"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
           <F label="Entrada (lbs)" value={form.desperdicioReciclado} onChange={set("desperdicioReciclado")} type="number" placeholder="0"/>
           <F label="Recuperado (lbs)" value={form.materialRecuperado} onChange={set("materialRecuperado")} type="number" placeholder="0"/>
+        </div>}
+
+        {form.etapa==="maquina"&&<div>
+          <S label="Motivo" value={form.motivoParada} onChange={set("motivoParada")} options={[{v:"",l:"— Seleccionar —"},...MOTIVOS_PARADA.map(m=>({v:m,l:m}))]}/>
+          <div style={{marginTop:12}}><F label="Duración de parada (horas)" value={form.duracionParada} onChange={set("duracionParada")} type="number" placeholder="Ej: 2.5"/></div>
+          <div style={{marginTop:12}}><F label="Piezas necesarias" value={form.piezasNecesarias} onChange={set("piezasNecesarias")} placeholder="Ej: Rodamiento, correa, tornillo..."/></div>
+          <div style={{marginTop:12}}><F label="Piezas cambiadas" value={form.piezasCambiadas} onChange={set("piezasCambiadas")} placeholder="Qué se cambió o reparó..."/></div>
         </div>}
 
         <F label="Notas (opcional)" value={form.notas} onChange={set("notas")} placeholder="Observaciones..."/>
@@ -1400,9 +1499,11 @@ function ProductoTerminado({logs,setLogs,ordenes,sup,regs}){
 
   const save=()=>{
     if(!form.cantidad||!form.producto)return;
+    if(modo==="compra"&&!form.destino)return;
+    const tipo=modo==="salida"?"salida":"entrada";
     const entry={id:Date.now(),fecha:form.fecha,producto:form.producto,cantidad:Number(form.cantidad),
-      unidad:form.unidad,tipo:form.tipo,destino:form.destino,ordenId:form.ordenId,
-      notas:form.notas,supervisor:sup.nombre};
+      unidad:form.unidad,tipo,destino:form.destino+(modo==="compra"?" (Compra)":""),ordenId:form.ordenId,
+      notas:form.notas||(modo==="compra"?"Compra externa":""),supervisor:sup.nombre};
     setLogs(p=>[entry,...p]);
     dbSaveProducto(entry);
     setSaved(true);setTimeout(()=>setSaved(false),2000);
@@ -1467,40 +1568,48 @@ function ProductoTerminado({logs,setLogs,ordenes,sup,regs}){
     </div>}
 
     {/* Action buttons */}
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-      <button onClick={()=>setModo(modo==="entrada"?false:"entrada")} style={{background:modo==="entrada"?B.green:"#fff",border:"2px solid "+(modo==="entrada"?B.green:B.border),borderRadius:14,padding:"13px 8px",cursor:"pointer",textAlign:"center"}}>
-        <div style={{fontSize:22}}>📥</div>
-        <div style={{color:modo==="entrada"?"#fff":B.textDark,fontSize:13,fontWeight:800,marginTop:4}}>Entrada</div>
-        <div style={{color:modo==="entrada"?"rgba(255,255,255,.8)":B.textLight,fontSize:11}}>Producción lista</div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+      <button onClick={()=>setModo(modo==="entrada"?false:"entrada")} style={{background:modo==="entrada"?B.green:"#fff",border:"2px solid "+(modo==="entrada"?B.green:B.border),borderRadius:14,padding:"13px 6px",cursor:"pointer",textAlign:"center"}}>
+        <div style={{fontSize:20}}>📥</div>
+        <div style={{color:modo==="entrada"?"#fff":B.textDark,fontSize:12,fontWeight:800,marginTop:4}}>Entrada</div>
+        <div style={{color:modo==="entrada"?"rgba(255,255,255,.8)":B.textLight,fontSize:10}}>Producción</div>
       </button>
-      <button onClick={()=>setModo(modo==="salida"?false:"salida")} style={{background:modo==="salida"?B.navy:"#fff",border:"2px solid "+(modo==="salida"?B.navy:B.border),borderRadius:14,padding:"13px 8px",cursor:"pointer",textAlign:"center"}}>
-        <div style={{fontSize:22}}>📤</div>
-        <div style={{color:modo==="salida"?"#fff":B.textDark,fontSize:13,fontWeight:800,marginTop:4}}>Envío</div>
-        <div style={{color:modo==="salida"?"rgba(255,255,255,.8)":B.textLight,fontSize:11}}>Sale al cliente</div>
+      <button onClick={()=>setModo(modo==="compra"?false:"compra")} style={{background:modo==="compra"?B.purple:"#fff",border:"2px solid "+(modo==="compra"?B.purple:B.border),borderRadius:14,padding:"13px 6px",cursor:"pointer",textAlign:"center"}}>
+        <div style={{fontSize:20}}>🛒</div>
+        <div style={{color:modo==="compra"?"#fff":B.textDark,fontSize:12,fontWeight:800,marginTop:4}}>Compra</div>
+        <div style={{color:modo==="compra"?"rgba(255,255,255,.8)":B.textLight,fontSize:10}}>Proveedor ext.</div>
+      </button>
+      <button onClick={()=>setModo(modo==="salida"?false:"salida")} style={{background:modo==="salida"?B.navy:"#fff",border:"2px solid "+(modo==="salida"?B.navy:B.border),borderRadius:14,padding:"13px 6px",cursor:"pointer",textAlign:"center"}}>
+        <div style={{fontSize:20}}>📤</div>
+        <div style={{color:modo==="salida"?"#fff":B.textDark,fontSize:12,fontWeight:800,marginTop:4}}>Envío</div>
+        <div style={{color:modo==="salida"?"rgba(255,255,255,.8)":B.textLight,fontSize:10}}>Sale al cliente</div>
       </button>
     </div>
 
     {/* Form */}
     {modo&&<Card ch={<div style={{display:"flex",flexDirection:"column",gap:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{color:B.textDark,fontSize:15,fontWeight:800}}>{modo==="entrada"?"📥 Nueva Entrada":"📤 Nuevo Envío"}</div>
+        <div style={{color:B.textDark,fontSize:15,fontWeight:800}}>{modo==="entrada"?"📥 Nueva Entrada":modo==="compra"?"🛒 Compra Externa":"📤 Nuevo Envío"}</div>
         <button onClick={()=>setModo(false)} style={{background:"none",border:"none",color:B.textLight,fontSize:18,cursor:"pointer"}}>✕</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
         <F label="Fecha" value={form.fecha} onChange={set("fecha")} type="date"/>
-        <S label="Producto" value={form.producto} onChange={set("producto")} options={productosDeOrdenes(ordenes).map(p=>({v:p,l:p}))}/>
+        {modo==="compra"?<F label="Producto" value={form.producto} onChange={set("producto")} placeholder="Nombre del producto"/>
+        :<S label="Producto" value={form.producto} onChange={set("producto")} options={productosDeOrdenes(ordenes).map(p=>({v:p,l:p}))}/>}
       </div>
       <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10}}>
         <F label="Cantidad" value={form.cantidad} onChange={set("cantidad")} type="number" placeholder="0"/>
         <S label="Unidad" value={form.unidad} onChange={set("unidad")} options={[{v:"uds",l:"uds"},{v:"lbs",l:"lbs"},{v:"rollos",l:"rollos"}]}/>
       </div>
+      {modo==="compra"&&<F label="Proveedor" value={form.destino} onChange={set("destino")} placeholder="Nombre del proveedor"/>}
+      {modo==="entrada"&&<F label="Proveedor (opcional)" value={form.destino} onChange={set("destino")} placeholder="Dejar vacío si es producción propia"/>}
       {modo==="salida"&&<div style={{display:"flex",flexDirection:"column",gap:10}}>
         <F label="Destino / Cliente" value={form.destino} onChange={set("destino")} placeholder="Ej: Ouesplast, Jimaní"/>
         <S label="Vincular a Orden (opcional)" value={form.ordenId} onChange={set("ordenId")}
-          options={[{v:"",l:"— Sin orden —"},...ordenes.map(o=>({v:String(o.id),l:o.cliente+" ("+o.fechaEnvio+")"}))]}/> 
+          options={[{v:"",l:"— Sin orden —"},...ordenes.map(o=>({v:String(o.id),l:o.cliente+" ("+o.fechaEnvio+")"}))]}/>
       </div>}
       <F label="Notas" value={form.notas} onChange={set("notas")} placeholder="Observaciones..."/>
-      <Btn ch={"✓ Guardar "+(modo==="entrada"?"Entrada":"Envío")} fn={save} full color={modo==="entrada"?B.green:B.navy}/>
+      <Btn ch={"✓ Guardar "+(modo==="compra"?"Compra":modo==="entrada"?"Entrada":"Envío")} fn={save} full color={modo==="compra"?B.purple:modo==="entrada"?B.green:B.navy}/>
     </div>}/>}
 
     {/* Movement log */}
@@ -1536,6 +1645,374 @@ function ProductoTerminado({logs,setLogs,ordenes,sup,regs}){
       }
     </div>}/>
   </div>);
+}
+
+// ── Flujo de Producción ──────────────────────────────────────────────────────
+function FlujoProduccion({lotes,setLotes,sup,mat,setMat,movs,setMovs,ordenes,productoLogs,setProductoLogs}){
+  const [activeLote,setActiveLote]=useState(lotes.length?lotes.length-1:0);
+  const lote=lotes[activeLote]||null;
+
+  const crearLote=()=>{
+    const nl={id:Date.now(),numero:nextLoteNumero(lotes),fecha:new Date().toISOString().split("T")[0],creadoPor:sup.nombre,etapas:newLoteEtapas()};
+    const next=[...lotes,nl];
+    setLotes(next);
+    setActiveLote(next.length-1);
+    dbSaveLote(nl);
+  };
+
+  const saveStage=(etapa,data)=>{
+    // Deduct resin from inventory when mezcla is saved
+    if(etapa==="mezcla"&&(data.ldpe||data.mlldpe)){
+      const lote=lotes[activeLote];
+      const fecha=lote?lote.fecha:new Date().toISOString().split("T")[0];
+      [["ldpe",data.ldpe||0],["mlldpe",data.mlldpe||0]].forEach(([id,val])=>{
+        if(!val)return;
+        const m=mat.find(x=>x.id===id);
+        if(!m)return;
+        setMat(p=>p.map(x=>x.id===id?Object.assign({},x,{stockActual:Math.max(0,x.stockActual-val)}):x));
+        const dmv={id:Date.now()+Math.random(),tipo:"descuento",materialId:id,materialNombre:m.nombre,cantidad:val,unidad:m.unidad,maquina:"Mezcla (Flujo)",fecha,supervisor:sup.nombre,notas:"Lote: "+(lote?lote.numero:"—")};
+        setMovs(p=>[dmv,...p]);dbSaveMovimiento(dmv);
+      });
+    }
+    // Auto-create producto terminado when slitter is saved
+    if(etapa==="slitter"&&data.lbs_out>0){
+      const lote=lotes[activeLote];
+      const impStg=lote?lote.etapas.impresion:{};
+      const prodName=impStg.producto||"Producto (Lote "+(lote?lote.numero:"")+")";
+      const cliente=impStg.cliente||"";
+      const entry={id:Date.now()+Math.random(),producto:prodName,cantidad:data.lbs_out,unidad:"lbs",tipo:"entrada",destino:"",ordenId:impStg.ordenId||"",fecha:lote?lote.fecha:new Date().toISOString().split("T")[0],notas:"Auto: Slitter Flujo — Lote "+(lote?lote.numero:""),supervisor:sup.nombre};
+      setProductoLogs(p=>[entry,...p]);
+      dbSaveProducto(entry);
+    }
+    setLotes(prev=>{
+      const updated=prev.map((l,i)=>{
+        if(i!==activeLote)return l;
+        const ne=Object.assign({},l.etapas[etapa],data,{saved:true});
+        const etapas=Object.assign({},l.etapas,{[etapa]:ne});
+        dbUpdateLote(l.id,{etapas:JSON.stringify(etapas)});
+        return Object.assign({},l,{etapas});
+      });
+      return updated;
+    });
+  };
+
+  const resetStage=(etapa)=>{
+    setLotes(prev=>{
+      const updated=prev.map((l,i)=>{
+        if(i!==activeLote)return l;
+        const etapas=Object.assign({},l.etapas,{[etapa]:LOTE_STAGE_INIT()});
+        dbUpdateLote(l.id,{etapas:JSON.stringify(etapas)});
+        return Object.assign({},l,{etapas});
+      });
+      return updated;
+    });
+  };
+
+  // Empty state
+  if(!lotes.length)return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 20px",gap:16}}>
+    <div style={{fontSize:48}}>🔄</div>
+    <div style={{color:B.textDark,fontSize:20,fontWeight:800}}>Flujo de Producción</div>
+    <div style={{color:B.textMid,fontSize:14,textAlign:"center",maxWidth:280}}>Crea un lote para comenzar a registrar el flujo de producción por etapas.</div>
+    <Btn ch="+ Nuevo Lote" fn={crearLote} color={B.teal}/>
+  </div>);
+
+  return(<div style={{display:"flex",flexDirection:"column",gap:16}}>
+    {/* Title */}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+      <div style={{fontSize:20,fontWeight:800,color:B.textDark}}>Flujo de Producción</div>
+    </div>
+
+    {/* Lote tabs */}
+    <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
+      {lotes.map((l,i)=>{
+        const active=i===activeLote;
+        return(<button key={l.id} onClick={()=>setActiveLote(i)} style={{background:active?"linear-gradient(135deg,"+B.teal+","+B.navy+")":"#fff",color:active?"#fff":B.textMid,border:active?"none":"1.5px solid "+B.border,borderRadius:20,padding:"8px 16px",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",boxShadow:active?"0 2px 8px rgba(0,0,0,.15)":"none",flexShrink:0}}>
+          Lote {l.numero}
+        </button>);
+      })}
+      <button onClick={crearLote} style={{background:"transparent",border:"1.5px dashed "+B.teal,borderRadius:20,padding:"8px 16px",fontSize:13,fontWeight:700,color:B.teal,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>+ Nuevo Lote</button>
+    </div>
+
+    {/* Stage cards — shared stages */}
+    {lote&&["mezcla","extrusion"].map((etapa,idx)=>{
+      const locked=!isStageUnlocked(lote,etapa);
+      const stg=lote.etapas[etapa];
+      const disp=disponibleLbs(lotes,activeLote,etapa);
+      const carry=carryOverLbs(lotes,activeLote,etapa);
+      const eff=eficiencia(stg);
+      const col=PROD_COLORES[etapa];
+      return(<FlujoStageCard key={etapa} etapa={etapa} idx={idx} stg={stg} locked={locked} disp={disp} carry={carry} eff={eff} col={col} onSave={saveStage} onReset={resetStage} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} ordenes={ordenes}/>);
+    })}
+
+    {/* Path split indicator */}
+    {lote&&(lote.etapas.extrusion.lbs_out>0)&&<div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 0"}}>
+      <div style={{flex:1,height:1,background:B.border}}/>
+      <span style={{fontSize:11,fontWeight:700,color:B.textLight,letterSpacing:.5}}>RUTAS DE PRODUCCIÓN</span>
+      <div style={{flex:1,height:1,background:B.border}}/>
+    </div>}
+
+    {/* Ruta A: Impresora → Slitter */}
+    {lote&&<div>
+      <div style={{fontSize:11,fontWeight:800,color:B.navy,letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:4}}>🖨️ Ruta A — Impresión</div>
+      {["impresion","slitter"].map((etapa,idx)=>{
+        const locked=!isStageUnlocked(lote,etapa);
+        const stg=lote.etapas[etapa];
+        const disp=disponibleLbs(lotes,activeLote,etapa);
+        const carry=carryOverLbs(lotes,activeLote,etapa);
+        const eff=eficiencia(stg);
+        const col=PROD_COLORES[etapa];
+        return(<FlujoStageCard key={etapa} etapa={etapa} idx={idx+2} stg={stg} locked={locked} disp={disp} carry={carry} eff={eff} col={col} onSave={saveStage} onReset={resetStage} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} ordenes={ordenes}/>);
+      })}
+    </div>}
+
+    {/* Ruta B: Cortadora */}
+    {lote&&<div>
+      <div style={{fontSize:11,fontWeight:800,color:"#4E7C59",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:4}}>🛠️ Ruta B — Corte</div>
+      {["cortadora"].map((etapa)=>{
+        const locked=!isStageUnlocked(lote,etapa);
+        const stg=lote.etapas[etapa];
+        const disp=disponibleLbs(lotes,activeLote,etapa);
+        const carry=carryOverLbs(lotes,activeLote,etapa);
+        const eff=eficiencia(stg);
+        const col=PROD_COLORES[etapa];
+        return(<FlujoStageCard key={etapa} etapa={etapa} idx={4} stg={stg} locked={locked} disp={disp} carry={carry} eff={eff} col={col} onSave={saveStage} onReset={resetStage} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} ordenes={ordenes}/>);
+      })}
+    </div>}
+
+    {/* Batch summary */}
+    {lote&&<FlujoResumen lote={lote}/>}
+  </div>);
+}
+
+function FlujoStageCard({etapa,idx,stg,locked,disp,carry,eff,col,onSave,onReset,sup,mat,setMat,movs,setMovs,ordenes}){
+  const isMezcla=etapa==="mezcla";
+  const isExtrusion=etapa==="extrusion";
+  const isImpresion=etapa==="impresion";
+  const [ldpe,setLdpe]=useState(stg.ldpe||"");
+  const [mlldpe,setMlldpe]=useState(stg.mlldpe||"");
+  const [lbsOut,setLbsOut]=useState(stg.lbs_out||"");
+  const [desp,setDesp]=useState(stg.desperdicio||"");
+  const [emp,setEmp]=useState(stg.empleado||"");
+  const [maq,setMaq]=useState(stg.maquina||(MAQUINAS[etapa]?MAQUINAS[etapa][0]:""));
+  const [turno,setTurno]=useState(stg.turno||"☀️ Turno Día");
+  const [notas,setNotas]=useState(stg.notas||"");
+  const [ordenId,setOrdenId]=useState(stg.ordenId||"");
+  const [tipoProducto,setTipoProducto]=useState(stg.producto||"Rollo Funda de Agua");
+
+  const maqOpts=(MAQUINAS[etapa==="impresion"?"impresion":etapa]||[]).map(m=>({v:m,l:m}));
+  const empOpts=[{v:"",l:"Seleccionar..."},...NOMBRES_EMPLEADOS.map(n=>({v:n,l:n}))];
+
+  const mezclaTotal=()=>(Number(ldpe)||0)+(Number(mlldpe)||0);
+
+  const handleSave=()=>{
+    if(isMezcla){
+      const total=mezclaTotal();
+      if(!total)return;
+      onSave(etapa,{lbs_in:total,lbs_out:total,ldpe:Number(ldpe)||0,mlldpe:Number(mlldpe)||0,desperdicio:Number(desp)||0,empleado:emp,maquina:maq,turno,notas});
+    }else{
+      const lbsIn=disp||0;
+      const out=Number(lbsOut)||0;
+      if(!out)return;
+      let selProducto="",selCliente="",selOrdenId="";
+      if(isExtrusion){
+        selProducto=tipoProducto;
+      }else if(ordenId&&ordenId.includes("|")){
+        const [oid,iidx]=ordenId.split("|");
+        const o=(ordenes||[]).find(x=>String(x.id)===oid);
+        if(o){selOrdenId=oid;selCliente=o.cliente;const it=(o.items||[])[Number(iidx)];if(it)selProducto=it.producto;}
+      }
+      onSave(etapa,{lbs_in:lbsIn,lbs_out:out,desperdicio:Number(desp)||0,empleado:emp,maquina:maq,turno,notas,ordenId:selOrdenId,producto:selProducto,cliente:selCliente});
+    }
+  };
+
+  // Locked state
+  if(locked)return(<Card style={{opacity:.45,position:"relative"}} ch={
+    <div style={{display:"flex",alignItems:"center",gap:12,padding:"4px 0"}}>
+      <div style={{width:40,height:40,borderRadius:12,background:col+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>{PROD_ICONOS[etapa]}</div>
+      <div style={{flex:1}}>
+        <div style={{fontWeight:800,fontSize:15,color:B.textDark}}>{PROD_ETIQUETAS[etapa]}</div>
+        <div style={{fontSize:12,color:B.textLight,marginTop:2}}>🔒 Complete la etapa anterior</div>
+      </div>
+    </div>
+  }/>);
+
+  // Saved state
+  if(stg.saved)return(<Card accent={col+"44"} ch={
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+        <div style={{width:40,height:40,borderRadius:12,background:col+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>{PROD_ICONOS[etapa]}</div>
+        <div style={{flex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontWeight:800,fontSize:15,color:B.textDark}}>{PROD_ETIQUETAS[etapa]}</span>
+            <Badge label="✓ Guardado" color={B.green}/>
+            {eff!==null&&<Badge label={eff.toFixed(1)+"%"} color={efColor(eff)}/>}
+          </div>
+          <div style={{fontSize:12,color:B.textLight,marginTop:2}}>{stg.empleado?stg.empleado+" · ":""}{stg.maquina} {stg.turno&&<TurnoBadge turno={stg.turno}/>}</div>
+          {stg.cliente&&<div style={{fontSize:11,color:B.navy,fontWeight:700,marginTop:3}}>📋 {stg.cliente}{stg.producto?" — "+stg.producto:""}</div>}
+          {stg.producto&&!stg.cliente&&<div style={{fontSize:11,color:B.teal,fontWeight:700,marginTop:3}}>{stg.producto}</div>}
+        </div>
+        <button onClick={()=>onReset(etapa)} style={{background:"none",border:"1px solid "+B.red+"40",borderRadius:8,padding:"6px 10px",color:B.red,fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>✕ Editar</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+        <div><div style={{fontSize:10,color:B.textLight,fontWeight:700,textTransform:"uppercase"}}>Entrada</div><div style={{fontSize:18,fontWeight:800,color:B.textDark}}>{(stg.lbs_in||0).toLocaleString()}<span style={{fontSize:11,fontWeight:600,color:B.textLight}}> lbs</span></div></div>
+        <div><div style={{fontSize:10,color:B.textLight,fontWeight:700,textTransform:"uppercase"}}>Salida</div><div style={{fontSize:18,fontWeight:800,color:col}}>{(stg.lbs_out||0).toLocaleString()}<span style={{fontSize:11,fontWeight:600,color:B.textLight}}> lbs</span></div></div>
+        <div><div style={{fontSize:10,color:B.textLight,fontWeight:700,textTransform:"uppercase"}}>Desperdicio</div><div style={{fontSize:18,fontWeight:800,color:B.red}}>{(stg.desperdicio||0).toLocaleString()}<span style={{fontSize:11,fontWeight:600,color:B.textLight}}> lbs</span></div></div>
+      </div>
+    </div>
+  }/>);
+
+  // Editable state
+  return(<Card accent={col+"44"} ch={
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+        <div style={{width:40,height:40,borderRadius:12,background:col+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>{PROD_ICONOS[etapa]}</div>
+        <div style={{flex:1}}>
+          <div style={{fontWeight:800,fontSize:15,color:B.textDark}}>{PROD_ETIQUETAS[etapa]}</div>
+          <div style={{fontSize:11,color:B.textLight,marginTop:1}}>Etapa {idx+1} de 5</div>
+        </div>
+      </div>
+
+      {/* Disponible field for non-mezcla */}
+      {!isMezcla&&disp!==null&&<div style={{background:B.bg,borderRadius:10,padding:"10px 12px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div>
+          <div style={{fontSize:10,color:B.textLight,fontWeight:700,textTransform:"uppercase"}}>Disponible (lbs)</div>
+          <div style={{fontSize:22,fontWeight:800,color:col}}>{disp.toLocaleString()}</div>
+        </div>
+        {carry>0&&<span style={{background:B.amber+"22",color:B.amber,borderRadius:20,padding:"4px 10px",fontSize:11,fontWeight:800}}>+{carry.toLocaleString()} excedente</span>}
+      </div>}
+
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        {/* Mezcla stock display */}
+        {isMezcla&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div style={{background:B.teal+"12",borderRadius:10,padding:"8px 10px",border:"1px solid "+B.teal+"30"}}>
+            <div style={{fontSize:10,color:B.textLight,fontWeight:700,textTransform:"uppercase"}}>Stock LDPE</div>
+            <div style={{fontSize:18,fontWeight:800,color:B.teal}}>{((mat.find(m=>m.id==="ldpe")||{stockActual:0}).stockActual).toLocaleString()}<span style={{fontSize:11,fontWeight:600,color:B.textLight}}> lbs</span></div>
+          </div>
+          <div style={{background:B.navy+"12",borderRadius:10,padding:"8px 10px",border:"1px solid "+B.navy+"30"}}>
+            <div style={{fontSize:10,color:B.textLight,fontWeight:700,textTransform:"uppercase"}}>Stock MLLDPE</div>
+            <div style={{fontSize:18,fontWeight:800,color:B.navy}}>{((mat.find(m=>m.id==="mlldpe")||{stockActual:0}).stockActual).toLocaleString()}<span style={{fontSize:11,fontWeight:600,color:B.textLight}}> lbs</span></div>
+          </div>
+        </div>}
+        {/* Mezcla specific fields */}
+        {isMezcla&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <F label="LDPE (lbs)" value={ldpe} onChange={setLdpe} type="number" placeholder="0"/>
+          <F label="MLLDPE (lbs)" value={mlldpe} onChange={setMlldpe} type="number" placeholder="0"/>
+        </div>}
+        {isMezcla&&mezclaTotal()>0&&<div style={{background:B.bg,borderRadius:10,padding:"8px 12px"}}>
+          <span style={{fontSize:12,fontWeight:700,color:B.textMid}}>Total mezcla: </span>
+          <span style={{fontSize:16,fontWeight:800,color:col}}>{mezclaTotal().toLocaleString()} lbs</span>
+          {(Number(ldpe)||0)>0&&(Number(mlldpe)||0)>0&&<span style={{fontSize:11,color:B.textLight,marginLeft:8}}>({((Number(ldpe)/mezclaTotal())*100).toFixed(0)}% / {((Number(mlldpe)/mezclaTotal())*100).toFixed(0)}%)</span>}
+        </div>}
+
+        {/* Order product selector for Impresora */}
+        {isImpresion&&ordenes&&ordenes.filter(o=>o.etapa!=="listo").length>0&&(()=>{
+          const prodOpts=[{v:"",l:"— Sin producto —"}];
+          (ordenes||[]).filter(o=>o.etapa!=="listo").forEach(o=>{
+            (o.items||[]).forEach((it,ii)=>{
+              prodOpts.push({v:o.id+"|"+ii,l:it.producto+" — "+o.cliente+" ("+it.cantidad+" "+it.unidad+")"});
+            });
+          });
+          return <S label="Producto de Orden" value={ordenId} onChange={setOrdenId} options={prodOpts}/>;
+        })()}
+        {isImpresion&&ordenId&&(()=>{
+          const [oid,iidx]=ordenId.split("|");
+          const o=(ordenes||[]).find(x=>String(x.id)===oid);
+          if(!o)return null;
+          const it=(o.items||[])[Number(iidx)];
+          if(!it)return null;
+          return <div style={{background:B.navy+"10",borderRadius:10,padding:"10px 12px",border:"1px solid "+B.navy+"25"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:13,fontWeight:800,color:B.navy}}>{it.producto}</div>
+              <Badge label={it.cantidad+" "+it.unidad} color={B.navy}/>
+            </div>
+            <div style={{fontSize:12,color:B.textMid,marginTop:4}}>Cliente: {o.cliente}</div>
+            {o.fechaEnvio&&<div style={{fontSize:11,color:B.textLight,marginTop:2}}>Envío: {o.fechaEnvio}</div>}
+          </div>;
+        })()}
+
+        {/* Extrusion product type */}
+        {isExtrusion&&<S label="Producto" value={tipoProducto} onChange={setTipoProducto} options={[{v:"Rollo Funda de Agua",l:"Rollo Funda de Agua"},{v:"Emballaje",l:"Emballaje"},{v:"Tubo",l:"Tubo"},{v:"Panadería",l:"Panadería"},{v:"Otro",l:"Otro"}]}/>}
+
+        {/* Non-mezcla: lbs_out */}
+        {!isMezcla&&<F label="Salida (lbs)" value={lbsOut} onChange={setLbsOut} type="number" placeholder="0"/>}
+
+        {/* Desperdicio */}
+        <F label="Desperdicio (lbs)" value={desp} onChange={setDesp} type="number" placeholder="0"/>
+
+        {/* Machine & employee */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <S label="Máquina" value={maq} onChange={setMaq} options={maqOpts}/>
+          <S label="Empleado" value={emp} onChange={setEmp} options={empOpts}/>
+        </div>
+
+        {/* Turno */}
+        <div>
+          <div style={{color:B.textLight,fontSize:12,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",marginBottom:6}}>Turno</div>
+          <div style={{display:"flex",gap:8}}>
+            {["☀️ Turno Día","🌙 Turno Noche"].map(t=>(<button key={t} onClick={()=>setTurno(t)} style={{flex:1,padding:"10px",borderRadius:10,border:turno===t?"2px solid "+col:"1.5px solid "+B.border,background:turno===t?col+"12":"#fff",color:B.textDark,fontSize:13,fontWeight:700,cursor:"pointer"}}>{t}</button>))}
+          </div>
+        </div>
+
+        {/* Notas */}
+        <F label="Notas (opcional)" value={notas} onChange={setNotas} placeholder="..."/>
+
+        {/* Save button */}
+        <Btn ch={"Guardar "+PROD_ETIQUETAS[etapa]} fn={handleSave} color={col} full={true}/>
+      </div>
+    </div>
+  }/>);
+}
+
+function FlujoResumen({lote}){
+  const mez=lote.etapas.mezcla;
+  const entrada=mez.lbs_out||0;
+  const salida=(lote.etapas.slitter.lbs_out||0)+(lote.etapas.cortadora.lbs_out||0);
+  const yld=entrada>0?((salida/entrada)*100):0;
+  const perdida=entrada-salida;
+  const yldCol=yld>=95?B.green:yld>=85?B.amber:B.red;
+
+  if(!entrada)return null;
+
+  return(<Card style={{background:"linear-gradient(135deg,"+B.navyDeep+","+B.tealDark+")",border:"none"}} ch={
+    <div>
+      <div style={{fontSize:14,fontWeight:800,color:"#fff",marginBottom:14,letterSpacing:.3}}>📊 Resumen del Lote</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div style={{background:"rgba(255,255,255,.1)",borderRadius:12,padding:"12px"}}>
+          <div style={{fontSize:10,color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase"}}>Entrada Mezcla</div>
+          <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{entrada.toLocaleString()}<span style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,.5)"}}> lbs</span></div>
+        </div>
+        <div style={{background:"rgba(255,255,255,.1)",borderRadius:12,padding:"12px"}}>
+          <div style={{fontSize:10,color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase"}}>Salida Final</div>
+          <div style={{fontSize:22,fontWeight:800,color:salida?B.tealLight:"rgba(255,255,255,.3)"}}>{salida?salida.toLocaleString():"—"}<span style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,.5)"}}> lbs</span></div>
+        </div>
+        <div style={{background:"rgba(255,255,255,.1)",borderRadius:12,padding:"12px"}}>
+          <div style={{fontSize:10,color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase"}}>Yield Final</div>
+          <div style={{fontSize:22,fontWeight:800,color:salida?yldCol:"rgba(255,255,255,.3)"}}>{salida?yld.toFixed(1)+"%":"—"}</div>
+        </div>
+        <div style={{background:"rgba(255,255,255,.1)",borderRadius:12,padding:"12px"}}>
+          <div style={{fontSize:10,color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase"}}>Pérdida Total</div>
+          <div style={{fontSize:22,fontWeight:800,color:salida?"#E05252":"rgba(255,255,255,.3)"}}>{salida?perdida.toLocaleString():"—"}<span style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,.5)"}}> lbs</span></div>
+        </div>
+      </div>
+
+      {/* Per-stage efficiency bar */}
+      {salida>0&&<div style={{marginTop:14}}>
+        <div style={{fontSize:10,color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase",marginBottom:8}}>Eficiencia por Etapa</div>
+        <div style={{display:"flex",gap:6}}>
+          {PROD_ETAPAS.map(e=>{
+            const s=lote.etapas[e];
+            const ef=eficiencia(s);
+            return(<div key={e} style={{flex:1,textAlign:"center"}}>
+              <div style={{background:ef!==null?efColor(ef)+"33":"rgba(255,255,255,.1)",borderRadius:8,padding:"6px 2px",marginBottom:4}}>
+                <div style={{fontSize:14,fontWeight:800,color:ef!==null?efColor(ef):"rgba(255,255,255,.3)"}}>{ef!==null?ef.toFixed(0)+"%":"—"}</div>
+              </div>
+              <div style={{fontSize:9,color:"rgba(255,255,255,.5)",fontWeight:600}}>{PROD_ETIQUETAS[e]}</div>
+            </div>);
+          })}
+        </div>
+      </div>}
+    </div>
+  }/>);
 }
 
 // ── Panel de Producción (Operadores) ─────────────────────────────────────────
@@ -2385,11 +2862,12 @@ function App(){
   const [cuentasPagar,setCuentasPagar]=useState([]);
   const [gastos,setGastos]=useState([]);
   const [pagos,setPagos]=useState([]);
+  const [lotes,setLotes]=useState([]);
 
   useEffect(()=>{
-    Promise.all([dbLoad(),dbLoadOrders(),dbLoadResina(),dbLoadProductos(),dbLoadMovimientos()]).then(([r,o,res,pt,mvs])=>{
+    Promise.all([dbLoad(),dbLoadOrders(),dbLoadResina(),dbLoadProductos(),dbLoadMovimientos(),dbLoadLotes()]).then(([r,o,res,pt,mvs,lt])=>{
       setRegs(r);setOrdenes(o);setResinaLogs(res);setProductoLogs(pt);
-      setMovs(mvs);
+      setMovs(mvs);setLotes(lt||[]);
       // Reconstruct mat stock from movements
       const stock={};
       mvs.forEach(mv=>{
@@ -2449,7 +2927,7 @@ function App(){
       {dbLoading&&<div style={{textAlign:"center",padding:40,color:B.textLight}}><div style={{fontSize:32,marginBottom:8}}>⏳</div><div style={{fontSize:14}}>Cargando datos...</div></div>}
       {!dbLoading&&vista==="dashboard"&&sup.rol==="operador"&&<PanelProduccion regs={regs} ordenes={ordenes} sup={sup} setVista={setVista}/>}
       {!dbLoading&&vista==="dashboard"&&sup.rol!=="operador"&&<Dashboard regs={regs} mat={mat} ordenes={ordenes} resinaLogs={resinaLogs} setVista={setVista} productoLogs={productoLogs}/>}
-      {!dbLoading&&vista==="registro"&&<Registro sup={sup} regs={regs} setRegs={setRegs} resinaLogs={resinaLogs} setResinaLogs={setResinaLogs} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} productoLogs={productoLogs} setProductoLogs={setProductoLogs} ordenes={ordenes} setOrdenes={setOrdenes}/>}
+      {!dbLoading&&vista==="registro"&&<FlujoProduccion lotes={lotes} setLotes={setLotes} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} ordenes={ordenes} productoLogs={productoLogs} setProductoLogs={setProductoLogs}/>}
       {!dbLoading&&vista==="ordenes"&&<Ordenes ordenes={ordenes} setOrdenes={setOrdenes} productoLogs={productoLogs} setProductoLogs={setProductoLogs} sup={sup}/>}
       {!dbLoading&&vista==="rendimiento"&&<Rendimiento regs={regs} resinaLogs={resinaLogs}/>}
       {!dbLoading&&vista==="almacen"&&<AlmacenUnificado logs={productoLogs} setLogs={setProductoLogs} ordenes={ordenes} sup={sup} mat={mat} setMat={setMat} movs={movs} setMovs={setMovs} regs={regs}/>}
